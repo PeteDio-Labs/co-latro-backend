@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Co-latro — authoritative game server (Bun + Express 5 + Drizzle/SQLite)",
+  "description": "Co-latro — authoritative game server (Bun + Express 5 + Drizzle/Postgres)",
   "scripts": {
     "dev": "bun --watch src/index.ts",
     "start": "bun run src/index.ts",
@@ -14,7 +14,8 @@
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "postgres": "^3.4.5"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",

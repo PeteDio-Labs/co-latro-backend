@@ -1,12 +1,11 @@
 import { defineConfig } from "drizzle-kit";
 
-// drizzle-kit runs under Node — keep this file free of bun:sqlite imports.
-const dbPath =
-  process.env.POKER_DB_PATH ?? `${process.env.HOME ?? "."}/.local/share/poker-mvp/poker.db`;
+// drizzle-kit reads the same DATABASE_URL the server uses (Postgres).
+const url = process.env.DATABASE_URL ?? "postgres://postgres:postgres@localhost:5432/colatro";
 
 export default defineConfig({
-  dialect: "sqlite",
+  dialect: "postgresql",
   schema: "./src/db/schema.ts",
   out: "./src/db/migrations",
-  dbCredentials: { url: dbPath },
+  dbCredentials: { url },
 });

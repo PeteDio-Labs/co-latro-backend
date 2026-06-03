@@ -5,21 +5,26 @@ The authoritative game server for **Co-latro**, a neon Cyber-HUD roguelike poker
 (`chips × mult`, hand levels, and jokers), runs the ante → blind → shop state machine, and persists every
 run. The browser client (**co-latro-frontend**) only ever talks to this server over HTTP.
 
-**Stack:** Bun · Express 5 · TypeScript · Drizzle ORM over `bun:sqlite`.
+**Stack:** Bun · Express 5 · TypeScript · Drizzle ORM over Postgres (`postgres-js`).
 
 ## Run it
 
-Requires [Bun](https://bun.sh).
+Requires [Bun](https://bun.sh) and a Postgres instance.
 
 ```bash
+docker run --rm -d -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=colatro postgres:17
+cp .env.example .env   # then tweak DATABASE_URL if needed
 bun install
 bun run dev        # http://localhost:3020 — runs migrations on boot
 ```
 
-The SQLite file lives **off the repo** at `~/.local/share/poker-mvp/poker.db` (override with `POKER_DB_PATH`).
+Configured by env (`.env.example` documents the full contract): `PORT` (3020), `NODE_ENV`, and
+**`DATABASE_URL`** (Postgres connection string; in prod sourced from Vault `kv/poker/db`).
 
 ```bash
-bun test           # engine, scoring, jokers, decks, shop, persistence, HTTP (117 cases)
+# Tests need a Postgres — point TEST_DATABASE_URL at an ephemeral one (never the live DB):
+docker run --rm -d -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=colatro postgres:17
+TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/colatro bun test  # 117 cases
 bun run typecheck
 ```
 
@@ -66,11 +71,14 @@ src/
 ├─ scoring.ts      base + per-level tables, handFeatures, scoreHand (levels + joker fold)
 ├─ difficulty.ts   Difficulty + HAND_SIZE / MAX_SELECT
 ├─ engine/         ante · decks · jokers · shop · run (state machine, toRunDTO) · errors
-├─ db/             Drizzle + bun:sqlite, run persistence + legacy backfill
+├─ db/             Drizzle + postgres-js, run persistence + legacy backfill
 └─ middleware/auth.ts · api/{auth,decks,run}.ts · app.ts · index.ts
 ```
 
 ## Deploy / CI
 
-A long-running HTTP service on `:3020`. Build & run with Bun (`bun run start`). Container image + pipeline
-config live with the CI workflow.
+A long-running HTTP service on `:3020`, shipped as a Docker image (`Dockerfile`, `oven/bun` base) that
+runs migrations on boot then `bun run start`. CI (`.github/workflows/ci.yml`, Workflow A on the self-hosted
+homelab runner): **PR** → install + typecheck + test (against an ephemeral Postgres service) + image build;
+**merge to `main`** → build + push to Nexus (`docker.pdlab.dev`) via `scripts/deploy.sh`, then roll out on
+the poker-api VM (the VM rollout is wired infra-side in `petedio-iac` — see the TODO in `deploy.sh`).

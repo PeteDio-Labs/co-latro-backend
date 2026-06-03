@@ -21,7 +21,7 @@ export function createAuthRouter(db: DB): Router {
   const bearerAuth = createBearerAuth(db);
 
   // Sign in by name: find-or-create the user, mint a fresh token (returned exactly once).
-  router.post("/login", (req, res) => {
+  router.post("/login", async (req, res) => {
     const rawName = req.body?.name;
     if (typeof rawName !== "string" || !rawName.trim()) {
       res.status(400).json({ error: "invalid_name", message: "Enter a name" });
@@ -31,29 +31,29 @@ export function createAuthRouter(db: DB): Router {
     const token = generateToken();
     const tokenHash = sha256hex(token);
 
-    const existing = db.select().from(users).where(eq(users.name, name)).get();
+    const [existing] = await db.select().from(users).where(eq(users.name, name)).limit(1);
     let user: { id: string; name: string };
     if (existing) {
-      db.update(users)
+      await db
+        .update(users)
         .set({ tokenHash, lastSeenAt: nowSec() })
-        .where(eq(users.id, existing.id))
-        .run();
+        .where(eq(users.id, existing.id));
       user = { id: existing.id, name: existing.name };
     } else {
       const id = crypto.randomUUID();
-      db.insert(users).values({ id, name, tokenHash }).run();
+      await db.insert(users).values({ id, name, tokenHash });
       user = { id, name };
     }
     res.status(201).json({ token, user });
   });
 
   // Resolve the current user from the Bearer token.
-  router.get("/me", bearerAuth, (req, res) => {
-    const row = db
+  router.get("/me", bearerAuth, async (req, res) => {
+    const [row] = await db
       .select({ id: users.id, name: users.name })
       .from(users)
       .where(eq(users.id, req.userId!))
-      .get();
+      .limit(1);
     if (!row) {
       res.status(401).json({ error: "invalid_token", message: "Sign in again" });
       return;

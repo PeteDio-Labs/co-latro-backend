@@ -1,37 +1,31 @@
-/** Drizzle + bun:sqlite singleton. The DB file lives on local disk (see config.dbPath). */
+/** Drizzle + postgres-js singleton. The DB is a Postgres server (see config.databaseUrl). */
 
-import { Database } from "bun:sqlite";
-import { drizzle, type BunSQLiteDatabase } from "drizzle-orm/bun-sqlite";
-import { migrate } from "drizzle-orm/bun-sqlite/migrator";
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
+import { migrate } from "drizzle-orm/postgres-js/migrator";
+import postgres from "postgres";
 import { fileURLToPath } from "node:url";
 import { config } from "../config.ts";
 import * as schema from "./schema.ts";
 
-export type DB = BunSQLiteDatabase<typeof schema>;
+export type DB = PostgresJsDatabase<typeof schema> & { $client: postgres.Sql };
 
 const migrationsFolder = fileURLToPath(new URL("./migrations", import.meta.url));
 
-/** Open a Drizzle DB at `path` (use ":memory:" in tests). Sets WAL + foreign keys. */
-export function makeDb(path: string): DB {
-  if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
-  const sqlite = new Database(path, { create: true });
-  sqlite.run("PRAGMA journal_mode = WAL");
-  sqlite.run("PRAGMA foreign_keys = ON");
-  sqlite.run("PRAGMA busy_timeout = 5000");
-  return drizzle(sqlite, { schema });
+/** Open a Drizzle DB against a Postgres connection string. Connects lazily on first query. */
+export function makeDb(url: string): DB {
+  const client = postgres(url);
+  return drizzle(client, { schema });
 }
 
 /** Apply generated migrations. Idempotent — safe to call at every boot. */
-export function runMigrations(database: DB): void {
-  migrate(database, { migrationsFolder });
+export function runMigrations(database: DB): Promise<void> {
+  return migrate(database, { migrationsFolder });
 }
 
 let singleton: DB | null = null;
 
-/** Lazily-opened process singleton against config.dbPath (real local-disk file). */
+/** Lazily-opened process singleton against config.databaseUrl. */
 export function getDb(): DB {
-  singleton ??= makeDb(config.dbPath);
+  singleton ??= makeDb(config.databaseUrl);
   return singleton;
 }

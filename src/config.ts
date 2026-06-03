@@ -1,10 +1,11 @@
 /** Runtime configuration, read once at boot. */
 
-// Default the SQLite file to LOCAL disk (never the SMB-mounted repo — WAL corrupts over smbfs).
-const defaultDbPath = `${process.env.HOME ?? "."}/.local/share/poker-mvp/poker.db`;
+// Postgres connection string. In prod this comes from the environment (sourced from
+// Vault `kv/poker/db` by the deploy tooling); locally it defaults to a dev Postgres.
+const defaultDatabaseUrl = "postgres://postgres:postgres@localhost:5432/colatro";
 
 export const config = {
   port: Number(process.env.PORT) || 3020,
   env: process.env.NODE_ENV ?? "development",
-  dbPath: process.env.POKER_DB_PATH ?? defaultDbPath,
+  databaseUrl: process.env.DATABASE_URL ?? defaultDatabaseUrl,
 } as const;

@@ -1,0 +1,65 @@
+# Co-latro backend — Workflow A (App CI/CD).
+#   PR            → install + typecheck + test (against an ephemeral Postgres) + image build (no push)
+#   push to main  → build + push image to Nexus (docker.pdlab.dev) + deploy to the poker-api VM
+#
+# Runtime env contract (see .env.example):
+#   PORT          HTTP port (default 3020)
+#   NODE_ENV      "development" | "production"
+#   DATABASE_URL  Postgres connection string (prod: sourced from Vault kv/poker/db by the deploy step)
+name: ci
+
+on:
+  pull_request: {}
+  push:
+    branches: [main]
+
+env:
+  IMAGE: docker.pdlab.dev/co-latro-backend
+
+jobs:
+  build:
+    runs-on: [self-hosted, linux, x64, homelab]
+
+    # Ephemeral Postgres for the test step — never the live .231 DB.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: colatro
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d colatro"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test (Postgres)
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/colatro
+        run: bun test
+
+      # PR: prove the image builds (no push).
+      - name: Build image
+        if: ${{ github.event_name == 'pull_request' }}
+        run: docker build -t "$IMAGE:pr-${{ github.event.pull_request.number }}" .
+
+      # main: build + push to Nexus + deploy to the poker-api VM.
+      - name: Build, push & deploy
+        if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+        env:
+          NEXUS_REGISTRY: docker.pdlab.dev
+          NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
+          NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
+        run: ./scripts/deploy.sh "${{ github.sha }}"
