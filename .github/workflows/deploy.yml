@@ -1,0 +1,70 @@
+# Co-latro backend — manual deploy to LXC 230 (publish-then-deploy model).
+# CI (ci.yml) publishes the image to Nexus on merge; THIS workflow rolls a chosen
+# image onto the VM on demand — you pass the git SHA (the tag ci.yml pushed).
+#
+# It does NOT need the DB secret: the systemd unit on 230 reads DATABASE_URL from the
+# Vault-rendered env-file laid down once by the petedio-iac Ansible rollout. The unit
+# runs `co-latro-backend:latest`, so deploy = point :latest at the chosen SHA in Nexus,
+# then restart the unit (its ExecStartPre re-pulls :latest). Secrets via OIDC→Vault
+# (colatro-ci role): Nexus creds + the LXC SSH key. Runs on the in-homelab runner.
+name: deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Image tag to deploy (the git SHA ci.yml pushed to Nexus, e.g. bb4fdfa)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  IMAGE: docker.pdlab.dev/co-latro-backend
+  VM_HOST: 192.168.50.230
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, homelab]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Encode Vault CA
+        id: vault_ca
+        run: echo "b64=$(base64 -w0 .github/vault-ca.crt)" >> "$GITHUB_OUTPUT"
+
+      - name: Vault — mint Nexus creds + LXC SSH key via OIDC
+        uses: hashicorp/vault-action@v3
+        with:
+          url: https://192.168.50.223:8200
+          method: jwt
+          path: jwt-github
+          role: colatro-ci
+          jwtGithubAudience: https://github.com/PeteDio-Labs
+          caCertificate: ${{ steps.vault_ca.outputs.b64 }}
+          exportEnv: true
+          secrets: |
+            kv/data/services/nexus username | NEXUS_USERNAME ;
+            kv/data/services/nexus admin_password | NEXUS_PASSWORD ;
+            kv/data/iac/lxc-ssh private_key | LXC_SSH_KEY
+
+      - name: Verify the requested tag exists in Nexus + point :latest at it
+        run: |
+          set -euo pipefail
+          echo "$NEXUS_PASSWORD" | docker login docker.pdlab.dev -u "$NEXUS_USERNAME" --password-stdin
+          # Fail clearly if the SHA was never published.
+          docker buildx imagetools inspect "$IMAGE:${{ inputs.sha }}" >/dev/null \
+            || { echo "::error::$IMAGE:${{ inputs.sha }} not found in Nexus — did ci.yml publish it?"; exit 1; }
+          docker buildx imagetools create -t "$IMAGE:latest" "$IMAGE:${{ inputs.sha }}"
+
+      - name: Roll it onto VM 230 (pull + restart the unit)
+        run: |
+          set -euo pipefail
+          KEY="$(mktemp)"; chmod 600 "$KEY"; printf '%s\n' "$LXC_SSH_KEY" > "$KEY"
+          trap 'rm -f "$KEY"' EXIT
+          ssh -i "$KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
+            "root@$VM_HOST" \
+            'systemctl restart co-latro-backend && sleep 5 && curl -fsS http://127.0.0.1:3020/health'
+          echo "Deployed ${{ inputs.sha }} → VM 230 (/health green)."

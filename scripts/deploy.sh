@@ -20,22 +20,11 @@ docker push "${IMAGE}:${SHA}"
 docker push "${IMAGE}:latest"
 
 # -----------------------------------------------------------------------------
-# TODO(PET-12, infra-side): roll the new image onto the poker-api VM (230).
-# The VM wiring (SSH access, docker-compose/systemd unit, and DATABASE_URL sourced
-# from Vault kv/poker/db) is owned by petedio-iac, not this repo. Once that lands,
-# replace this guarded block with the real rollout. The container reaches Postgres
-# at 192.168.50.231 via DATABASE_URL and runs migrations on boot (src/index.ts).
-#
-# Expected shape (pseudocode — DO NOT enable until infra provides the targets):
-#   ssh "${POKER_VM_HOST}" \
-#     "docker pull ${IMAGE}:${SHA} && \
-#      docker tag ${IMAGE}:${SHA} co-latro-backend:current && \
-#      systemctl restart co-latro-backend"   # unit injects DATABASE_URL from Vault-rendered env
+# This script is PUBLISH-ONLY: build + push to Nexus. The on-VM rollout is a
+# SEPARATE, on-demand step — the manual deploy workflow (.github/workflows/deploy.yml,
+# workflow_dispatch with a `sha` input) SSHes to LXC 230, pulls the tag, and restarts
+# the systemd unit. The unit's DATABASE_URL comes from the Vault-rendered env-file laid
+# down once by the petedio-iac Ansible rollout (configure-poker-api.yml) — so neither
+# this script nor the deploy workflow needs the DB secret. (PET-12 / PET-52 / PET-79.)
 # -----------------------------------------------------------------------------
-if [[ -n "${POKER_VM_HOST:-}" ]]; then
-  echo "ERROR: POKER_VM_HOST is set but the rollout step is not yet wired (PET-12 infra-side)." >&2
-  echo "       Remove this guard and implement the SSH rollout once the VM target exists." >&2
-  exit 1
-fi
-
-echo "==> Image published. VM rollout is infra-side (petedio-iac) — see TODO in this script."
+echo "==> Image published to Nexus. Roll it onto VM 230 via the deploy workflow (sha=${SHA})."

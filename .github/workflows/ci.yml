@@ -1,11 +1,11 @@
-# Co-latro backend — Workflow A (App CI/CD).
-#   PR            → install + typecheck + test (against an ephemeral Postgres) + image build (no push)
-#   push to main  → build + push image to Nexus (docker.pdlab.dev) + deploy to the poker-api VM
+# Co-latro backend — Workflow A (App CI/CD), publish-on-merge.
+#   PR            → install + typecheck + test (ephemeral Postgres) + image build (no push)
+#   push to main  → build + PUSH image to Nexus (docker.pdlab.dev). NO auto-rollout —
+#                   the on-VM deploy is the manual deploy.yml (workflow_dispatch, SHA in).
 #
-# Runtime env contract (see .env.example):
-#   PORT          HTTP port (default 3020)
-#   NODE_ENV      "development" | "production"
-#   DATABASE_URL  Postgres connection string (prod: sourced from Vault kv/poker/db by the deploy step)
+# Secrets come from Vault via GitHub OIDC (colatro-ci role → colatro-ci policy), NOT
+# repo Actions secrets — mirrors petedio-iac's terraform.yml. Runs on the self-hosted
+# runner (VM 232) inside the homelab so it can reach Nexus + Vault (.223).
 name: ci
 
 on:
@@ -13,8 +13,13 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+  id-token: write # mint the GitHub OIDC token vault-action exchanges for a Vault token
+
 env:
   IMAGE: docker.pdlab.dev/co-latro-backend
+  VAULT_ADDR: https://192.168.50.223:8200
 
 jobs:
   build:
@@ -55,11 +60,32 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         run: docker build -t "$IMAGE:pr-${{ github.event.pull_request.number }}" .
 
-      # main: build + push to Nexus + deploy to the poker-api VM.
-      - name: Build, push & deploy
+      # vault-action's caCertificate wants base64 PEM; a `with:` can't read a file,
+      # so emit the committed public CA as a base64 step output (verify TLS, not skip).
+      - name: Encode Vault CA
+        if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+        id: vault_ca
+        run: echo "b64=$(base64 -w0 .github/vault-ca.crt)" >> "$GITHUB_OUTPUT"
+
+      # main: mint Nexus push creds from Vault via OIDC (colatro-ci role).
+      - name: Vault — mint Nexus creds via OIDC
+        if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+        uses: hashicorp/vault-action@v3
+        with:
+          url: https://192.168.50.223:8200
+          method: jwt
+          path: jwt-github # non-default mount — must be explicit or Vault 403s
+          role: colatro-ci
+          jwtGithubAudience: https://github.com/PeteDio-Labs
+          caCertificate: ${{ steps.vault_ca.outputs.b64 }}
+          exportEnv: true
+          secrets: |
+            kv/data/services/nexus username | NEXUS_USERNAME ;
+            kv/data/services/nexus admin_password | NEXUS_PASSWORD
+
+      # main: build + PUSH to Nexus (no rollout — deploy.yml does that on demand).
+      - name: Build & push image
         if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
         env:
           NEXUS_REGISTRY: docker.pdlab.dev
-          NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
-          NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
         run: ./scripts/deploy.sh "${{ github.sha }}"
