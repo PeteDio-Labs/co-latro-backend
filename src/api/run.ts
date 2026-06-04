@@ -28,58 +28,58 @@ export function createRunRouter(db: DB): Router {
   const router = Router();
 
   // Resume: latest non-terminal run, or null.
-  router.get("/active", (req, res) => {
-    const run = getActiveRun(db, req.userId!);
+  router.get("/active", async (req, res) => {
+    const run = await getActiveRun(db, req.userId!);
     res.json({ run: run ? toRunDTO(run) : null });
   });
 
   // Start a NEW run — overwrites the active save (Balatro-style). Resume uses GET /active + "Continue Run".
-  router.post("/", (req, res) => {
+  router.post("/", async (req, res) => {
     const difficulty = req.body?.difficulty;
     if (!isDifficulty(difficulty)) {
       throw new GameError(400, "invalid_difficulty", "difficulty must be easy, medium, or hard");
     }
     const deckId = typeof req.body?.deckId === "string" ? req.body.deckId : undefined;
     if (deckId !== undefined) getDeck(deckId); // validate BEFORE deleting (a bad deck must not destroy the save)
-    deleteActiveRuns(db, req.userId!); // overwrite any in-progress run
+    await deleteActiveRuns(db, req.userId!); // overwrite any in-progress run
     const run = startRun(difficulty, req.userId!, deckId);
-    insertRun(db, run);
+    await insertRun(db, run);
     res.status(201).json(toRunDTO(run));
   });
 
   // Discard the active run so a fresh one can start.
-  router.post("/abandon", (req, res) => {
-    const run = getActiveRun(db, req.userId!);
+  router.post("/abandon", async (req, res) => {
+    const run = await getActiveRun(db, req.userId!);
     if (run) {
       run.status = "lost_run";
-      saveRun(db, run);
+      await saveRun(db, run);
     }
     res.json({ run: null });
   });
 
-  router.post("/blind", (req, res) => {
-    const run = requireActive(db, req.userId!);
+  router.post("/blind", async (req, res) => {
+    const run = await requireActive(db, req.userId!);
     startBlind(run);
-    saveRun(db, run);
+    await saveRun(db, run);
     res.json(toRunDTO(run));
   });
 
-  router.post("/play", (req, res) => {
-    const run = requireActive(db, req.userId!);
+  router.post("/play", async (req, res) => {
+    const run = await requireActive(db, req.userId!);
     playHand(run, req.body?.selectedCardIds);
-    saveRun(db, run);
+    await saveRun(db, run);
     res.json(toRunDTO(run));
   });
 
-  router.post("/discard", (req, res) => {
-    const run = requireActive(db, req.userId!);
+  router.post("/discard", async (req, res) => {
+    const run = await requireActive(db, req.userId!);
     discardCards(run, req.body?.selectedCardIds);
-    saveRun(db, run);
+    await saveRun(db, run);
     res.json(toRunDTO(run));
   });
 
-  router.post("/preview", (req, res) => {
-    const run = requireActive(db, req.userId!);
+  router.post("/preview", async (req, res) => {
+    const run = await requireActive(db, req.userId!);
     const ids = req.body?.selectedCardIds;
     let preview: ScoreBreakdown | null = null;
     if (run.status === "playing" && Array.isArray(ids) && ids.length > 0) {
@@ -89,53 +89,53 @@ export function createRunRouter(db: DB): Router {
   });
 
   // Shop: buy a planet (levels a hand) / reroll the offerings.
-  router.post("/buy", (req, res) => {
-    const run = requireActive(db, req.userId!);
+  router.post("/buy", async (req, res) => {
+    const run = await requireActive(db, req.userId!);
     buyItem(run, req.body?.itemId);
-    saveRun(db, run);
+    await saveRun(db, run);
     res.json(toRunDTO(run));
   });
 
-  router.post("/reroll", (req, res) => {
-    const run = requireActive(db, req.userId!);
+  router.post("/reroll", async (req, res) => {
+    const run = await requireActive(db, req.userId!);
     rerollShop(run);
-    saveRun(db, run);
+    await saveRun(db, run);
     res.json(toRunDTO(run));
   });
 
   // Sell a joker (half refund) / reorder jokers (order affects scoring).
-  router.post("/sell", (req, res) => {
-    const run = requireActive(db, req.userId!);
+  router.post("/sell", async (req, res) => {
+    const run = await requireActive(db, req.userId!);
     sellJoker(run, req.body?.jokerId);
-    saveRun(db, run);
+    await saveRun(db, run);
     res.json(toRunDTO(run));
   });
 
-  router.post("/reorder", (req, res) => {
-    const run = requireActive(db, req.userId!);
+  router.post("/reorder", async (req, res) => {
+    const run = await requireActive(db, req.userId!);
     moveJoker(run, req.body?.jokerId, req.body?.dir);
-    saveRun(db, run);
+    await saveRun(db, run);
     res.json(toRunDTO(run));
   });
 
-  router.post("/continue", (req, res) => {
-    const run = requireActive(db, req.userId!);
+  router.post("/continue", async (req, res) => {
+    const run = await requireActive(db, req.userId!);
     continueRun(run);
-    saveRun(db, run);
+    await saveRun(db, run);
     res.json(toRunDTO(run));
   });
 
   // Deck peek — grouped counts only (sorted), so draw order is never revealed.
-  router.get("/deck", (req, res) => {
-    const run = requireActive(db, req.userId!);
+  router.get("/deck", async (req, res) => {
+    const run = await requireActive(db, req.userId!);
     res.json({ remaining: groupRemaining(run), composition: groupComposition(run) });
   });
 
   return router;
 }
 
-function requireActive(db: DB, userId: string): RunState {
-  const run = getActiveRun(db, userId);
+async function requireActive(db: DB, userId: string): Promise<RunState> {
+  const run = await getActiveRun(db, userId);
   if (!run) {
     throw new GameError(404, "no_active_run", "No active run");
   }

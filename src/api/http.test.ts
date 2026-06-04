@@ -1,14 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import type { Server } from "node:http";
 import { createApp } from "../app.ts";
-import { makeDb, runMigrations } from "../db/client.ts";
+import { freshDb } from "../db/testdb.ts";
 
 let server: Server;
 let base: string;
 
-beforeAll(() => {
-  const db = makeDb(":memory:");
-  runMigrations(db);
+beforeAll(async () => {
+  const db = await freshDb(); // migrated + truncated Postgres
   server = createApp(db).listen(0) as unknown as Server;
   const addr = server.address();
   const port = typeof addr === "object" && addr ? addr.port : 0;

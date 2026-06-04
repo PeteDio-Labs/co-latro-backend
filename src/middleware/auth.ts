@@ -19,22 +19,31 @@ export function sha256hex(token: string): string {
 }
 
 export function createBearerAuth(db: DB) {
-  return function bearerAuth(req: Request, res: Response, next: NextFunction): void {
+  return async function bearerAuth(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
     const match = (req.header("authorization") ?? "").match(/^Bearer\s+(.+)$/i);
     if (!match) {
       res.status(401).json({ error: "missing_bearer_token", message: "Sign in to play" });
       return;
     }
     const hash = sha256hex(match[1]!.trim());
-    const row = db.select({ id: users.id }).from(users).where(eq(users.tokenHash, hash)).get();
+    const rows = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.tokenHash, hash))
+      .limit(1);
+    const row = rows[0];
     if (!row) {
       res.status(401).json({ error: "invalid_token", message: "Session expired — sign in again" });
       return;
     }
-    db.update(users)
+    await db
+      .update(users)
       .set({ lastSeenAt: Math.floor(Date.now() / 1000) })
-      .where(eq(users.id, row.id))
-      .run();
+      .where(eq(users.id, row.id));
     req.userId = row.id;
     next();
   };

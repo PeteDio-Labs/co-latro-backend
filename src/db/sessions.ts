@@ -22,54 +22,52 @@ function normalizeRun(state: RunState): RunState {
 }
 
 /** Latest non-terminal run for a user, or null. Drives resume routing. */
-export function getActiveRun(db: DB, userId: string): RunState | null {
-  const rows = db
+export async function getActiveRun(db: DB, userId: string): Promise<RunState | null> {
+  const rows = await db
     .select({ state: gameSessions.state })
     .from(gameSessions)
     .where(and(eq(gameSessions.userId, userId), notInArray(gameSessions.status, TERMINAL)))
     .orderBy(desc(gameSessions.updatedAt))
-    .limit(1)
-    .all();
+    .limit(1);
   const state = rows[0]?.state;
   return state ? normalizeRun(state) : null;
 }
 
 /** Remove the user's active (non-terminal) run(s) — used to overwrite the save on a new run. */
-export function deleteActiveRuns(db: DB, userId: string): void {
-  db.delete(gameSessions)
-    .where(and(eq(gameSessions.userId, userId), notInArray(gameSessions.status, TERMINAL)))
-    .run();
+export async function deleteActiveRuns(db: DB, userId: string): Promise<void> {
+  await db
+    .delete(gameSessions)
+    .where(and(eq(gameSessions.userId, userId), notInArray(gameSessions.status, TERMINAL)));
 }
 
-export function getRunById(db: DB, runId: string): RunState | null {
-  const row = db
+export async function getRunById(db: DB, runId: string): Promise<RunState | null> {
+  const rows = await db
     .select({ state: gameSessions.state })
     .from(gameSessions)
     .where(eq(gameSessions.id, runId))
-    .get();
-  const state = row?.state;
+    .limit(1);
+  const state = rows[0]?.state;
   return state ? normalizeRun(state) : null;
 }
 
-export function insertRun(db: DB, run: RunState): void {
-  db.insert(gameSessions)
-    .values({
-      id: run.runId,
-      userId: run.userId,
-      status: run.status,
-      ante: run.ante,
-      difficulty: run.difficulty,
-      state: run,
-      createdAt: run.createdAt,
-      updatedAt: run.updatedAt,
-    })
-    .run();
+export async function insertRun(db: DB, run: RunState): Promise<void> {
+  await db.insert(gameSessions).values({
+    id: run.runId,
+    userId: run.userId,
+    status: run.status,
+    ante: run.ante,
+    difficulty: run.difficulty,
+    state: run,
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+  });
 }
 
 /** Persist the run JSON + denormalized status/ante/difficulty + updatedAt. */
-export function saveRun(db: DB, run: RunState): void {
+export async function saveRun(db: DB, run: RunState): Promise<void> {
   run.updatedAt = Date.now();
-  db.update(gameSessions)
+  await db
+    .update(gameSessions)
     .set({
       status: run.status,
       ante: run.ante,
@@ -77,6 +75,5 @@ export function saveRun(db: DB, run: RunState): void {
       state: run,
       updatedAt: run.updatedAt,
     })
-    .where(eq(gameSessions.id, run.runId))
-    .run();
+    .where(eq(gameSessions.id, run.runId));
 }

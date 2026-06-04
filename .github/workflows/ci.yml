@@ -1,0 +1,91 @@
+# Co-latro backend — Workflow A (App CI/CD), publish-on-merge.
+#   PR            → install + typecheck + test (ephemeral Postgres) + image build (no push)
+#   push to main  → build + PUSH image to Nexus (docker.pdlab.dev). NO auto-rollout —
+#                   the on-VM deploy is the manual deploy.yml (workflow_dispatch, SHA in).
+#
+# Secrets come from Vault via GitHub OIDC (colatro-ci role → colatro-ci policy), NOT
+# repo Actions secrets — mirrors petedio-iac's terraform.yml. Runs on the self-hosted
+# runner (VM 232) inside the homelab so it can reach Nexus + Vault (.223).
+name: ci
+
+on:
+  pull_request: {}
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write # mint the GitHub OIDC token vault-action exchanges for a Vault token
+
+env:
+  IMAGE: docker.pdlab.dev/co-latro-backend
+  VAULT_ADDR: https://192.168.50.223:8200
+
+jobs:
+  build:
+    runs-on: [self-hosted, linux, x64, homelab]
+
+    # Ephemeral Postgres for the test step — never the live .231 DB.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: colatro
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d colatro"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test (Postgres)
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/colatro
+        run: bun test
+
+      # PR: prove the image builds (no push).
+      - name: Build image
+        if: ${{ github.event_name == 'pull_request' }}
+        run: docker build -t "$IMAGE:pr-${{ github.event.pull_request.number }}" .
+
+      # vault-action's caCertificate wants base64 PEM; a `with:` can't read a file,
+      # so emit the committed public CA as a base64 step output (verify TLS, not skip).
+      - name: Encode Vault CA
+        if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+        id: vault_ca
+        run: echo "b64=$(base64 -w0 .github/vault-ca.crt)" >> "$GITHUB_OUTPUT"
+
+      # main: mint Nexus push creds from Vault via OIDC (colatro-ci role).
+      - name: Vault — mint Nexus creds via OIDC
+        if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+        uses: hashicorp/vault-action@v3
+        with:
+          url: https://192.168.50.223:8200
+          method: jwt
+          path: jwt-github # non-default mount — must be explicit or Vault 403s
+          role: colatro-ci
+          jwtGithubAudience: https://github.com/PeteDio-Labs
+          caCertificate: ${{ steps.vault_ca.outputs.b64 }}
+          exportEnv: true
+          secrets: |
+            kv/data/services/nexus username | NEXUS_USERNAME ;
+            kv/data/services/nexus admin_password | NEXUS_PASSWORD
+
+      # main: build + PUSH to Nexus (no rollout — deploy.yml does that on demand).
+      - name: Build & push image
+        if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+        env:
+          NEXUS_REGISTRY: docker.pdlab.dev
+        run: ./scripts/deploy.sh "${{ github.sha }}"
