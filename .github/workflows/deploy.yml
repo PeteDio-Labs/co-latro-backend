@@ -54,10 +54,18 @@ jobs:
         run: |
           set -euo pipefail
           echo "$NEXUS_PASSWORD" | docker login docker.pdlab.dev -u "$NEXUS_USERNAME" --password-stdin
-          # Fail clearly if the SHA was never published.
-          docker buildx imagetools inspect "$IMAGE:${{ inputs.sha }}" >/dev/null \
-            || { echo "::error::$IMAGE:${{ inputs.sha }} not found in Nexus — did ci.yml publish it?"; exit 1; }
-          docker buildx imagetools create -t "$IMAGE:latest" "$IMAGE:${{ inputs.sha }}"
+          TAG='${{ inputs.sha }}'
+          # ci.yml tags with the FULL github.sha (40 chars). Accept a short SHA too:
+          # if the exact tag is missing, find a published tag that starts with it.
+          if ! docker buildx imagetools inspect "$IMAGE:$TAG" >/dev/null 2>&1; then
+            echo "exact tag $TAG not found; resolving as a short SHA prefix…"
+            FULL="$(curl -fsS -u "$NEXUS_USERNAME:$NEXUS_PASSWORD" \
+              https://docker.pdlab.dev/v2/co-latro-backend/tags/list \
+              | python3 -c "import sys,json; t=json.load(sys.stdin)['tags']; m=[x for x in t if x.startswith('$TAG')]; print(m[0] if m else '')")"
+            [ -n "$FULL" ] || { echo "::error::no Nexus tag matches '$TAG' — did ci.yml publish it?"; exit 1; }
+            echo "resolved $TAG -> $FULL"; TAG="$FULL"
+          fi
+          docker buildx imagetools create -t "$IMAGE:latest" "$IMAGE:$TAG"
 
       - name: Roll it onto VM 230 (pull + restart the unit)
         run: |
