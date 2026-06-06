@@ -49,7 +49,12 @@ import {
 } from "./consumables.ts";
 import { VOUCHER_BY_ID } from "./vouchers.ts";
 import { TAGS, TAG_BY_ID, type TagTrigger } from "./tags.ts";
-import { BOSS_EFFECT_BY_ID, effectiveBossTargetMult, rollBossEffect } from "./boss.ts";
+import {
+  BOSS_EFFECT_BY_ID,
+  applyFaceDownEffect,
+  effectiveBossTargetMult,
+  rollBossEffect,
+} from "./boss.ts";
 import {
   effectiveExtraDiscards,
   effectiveExtraHands,
@@ -64,6 +69,12 @@ export type RunStatus = "selecting_blind" | "playing" | "shop" | "pack_open" | "
 
 export interface PlayResult {
   playedCardIds: string[];
+  /**
+   * The played cards, in selection order, with any face-down overlay flipped off
+   * (PET-83 — boss-effect cards are revealed at score time so the FE animation
+   * can show what they actually were).
+   */
+  playedCards: Card[];
   breakdown: ScoreBreakdown;
 }
 
@@ -332,6 +343,9 @@ export function startBlind(run: RunState, rng: () => number = Math.random): void
   run.discardsUsedThisBlind = 0;
   run.status = "playing";
   if (run.currentBossEffect) applyBossEffect(run, "start");
+  // PET-83: Wheel/Mark flip a subset of the freshly-dealt hand face-down. Run after
+  // applyBossEffect (which is currently a content-stream hook) but before tags fire.
+  applyFaceDownEffect(run.hand, run.currentBossEffect, rng);
   applyTags(run, "on_next_blind_start", rng);
 }
 
@@ -416,10 +430,17 @@ export function playHand(
   const selected = resolveSelection(run, selectedIds);
   const ids = selected.map((c) => c.id);
 
+  // PET-83: face-down cards are revealed at play time. Flip them BEFORE scoring so the
+  // played-card list in lastPlay shows real ranks/suits to the FE animation, but they
+  // remain excluded from chips/mult via scoreHand's pre-filter on the persisted overlay.
+  // We capture which were face-down so scoring uses a faceDown-tagged copy.
+  const playedForScoring = selected.map((c) => ({ ...c }));
+  for (const c of selected) if (c.faceDown) c.faceDown = false;
+
   // Hook for boss effects that mutate selection/scoring before resolution (PET-78).
   if (run.currentBossEffect) applyBossEffect(run, "play");
 
-  const breakdown = scoreHand(selected, scoreCtx(run));
+  const breakdown = scoreHand(playedForScoring, scoreCtx(run));
   run.totalScore += breakdown.score;
   run.handsRemaining -= 1;
 
@@ -431,7 +452,7 @@ export function playHand(
   }
 
   removeFromHand(run, ids);
-  draw(run, selected.length);
+  draw(run, selected.length, rng);
 
   // Economy jokers pay out at end of each hand played (before the shop transition so the
   // money shows on the shop screen). Tolerate unknown ids (tests stuff synthetic joker ids).
@@ -442,7 +463,7 @@ export function playHand(
   // The Hook (PET-83): at the end of each played hand, discard 2 random cards and redraw.
   if (run.currentBossEffect === "the_hook") applyHookDiscard(run, rng);
 
-  const result: PlayResult = { playedCardIds: ids, breakdown };
+  const result: PlayResult = { playedCardIds: ids, playedCards: selected, breakdown };
   run.lastPlay = result;
   checkTransition(run, rng);
   return result;
@@ -455,7 +476,7 @@ function applyHookDiscard(run: RunState, rng: () => number): void {
     const idx = Math.floor(rng() * run.hand.length);
     run.hand.splice(idx, 1);
   }
-  draw(run, toRemove);
+  draw(run, toRemove, rng);
 }
 
 export function discardCards(
@@ -473,7 +494,7 @@ export function discardCards(
   run.discardsRemaining -= 1;
   run.discardsUsedThisBlind += 1;
   removeFromHand(run, ids);
-  draw(run, selected.length);
+  draw(run, selected.length, rng);
   checkTransition(run, rng); // only the softlock guard is reachable here (no score change)
 }
 
@@ -1057,11 +1078,16 @@ export function skipBlind(run: RunState, rng: () => number = Math.random): void 
   run.target = blindTarget(run.ante, run.blindIndex, run.difficulty);
 }
 
-function draw(run: RunState, count: number): void {
+function draw(run: RunState, count: number, rng: () => number = Math.random): void {
   const n = Math.min(count, run.deck.length);
+  const fresh: Card[] = [];
   for (let i = 0; i < n; i++) {
-    run.hand.push(run.deck.shift()!);
+    const card = run.deck.shift()!;
+    run.hand.push(card);
+    fresh.push(card);
   }
+  // PET-83: Wheel/Mark applies to every freshly-drawn card, so Hook + Wheel interact correctly.
+  if (fresh.length > 0) applyFaceDownEffect(fresh, run.currentBossEffect, rng);
 }
 
 function removeFromHand(run: RunState, ids: string[]): void {
