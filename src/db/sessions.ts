@@ -36,6 +36,9 @@ function normalizeRun(state: RunState): RunState {
   s.jokerStates ??= {};
   s.discardsUsedThisBlind ??= 0;
   s.heldGoldRoundEnd ??= false;
+  // PET-78 tag effects — older saves predate these transient run-state slots.
+  s.nextHandMultBonus ??= 0;
+  s.freeVoucherPending ??= false;
   // PET-70 pack flow — older saves predate the openingPack field.
   s.openingPack ??= null;
   // PET-75 card modifier overlay — older saves predate this.

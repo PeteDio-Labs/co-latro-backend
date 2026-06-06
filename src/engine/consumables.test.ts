@@ -38,6 +38,8 @@ function makeRun(over: Partial<RunState> & { hand: Card[] }): RunState {
     jokerStates: {},
     discardsUsedThisBlind: 0,
     heldGoldRoundEnd: false,
+    nextHandMultBonus: 0,
+    freeVoucherPending: false,
     deckEnhancements: {},
     openingPack: null,
     createdAt: 0,
