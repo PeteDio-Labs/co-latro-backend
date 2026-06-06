@@ -10,7 +10,7 @@ import {
   startRun,
   type RunState,
 } from "./run.ts";
-import { cards } from "../testkit.ts";
+import { cards, withMod, card as cardOne } from "../testkit.ts";
 import { faceCode, standardFaces } from "../cards.ts";
 import { defaultHandLevels } from "../scoring.ts";
 
@@ -47,6 +47,7 @@ function runWith(over: Partial<RunState> & { hand: RunState["hand"] }): RunState
     discardsUsedThisBlind: 0,
     heldGoldRoundEnd: false,
     openingPack: null,
+    deckEnhancements: {},
     createdAt: 0,
     updatedAt: 0,
     ...over,
@@ -288,5 +289,40 @@ describe("jokers", () => {
     expect(run.jokerStates.green_joker?.counter).toBe(1);
     expect(run.jokerStates.square_joker?.counter).toBe(1);
     expect(run.jokerStates.joker).toBeUndefined(); // non-scaling joker untouched
+  });
+});
+
+describe("card modifier end-of-blind hooks (PET-75)", () => {
+  it("gold-enhancement payout: +$3 per gold card held in hand at round end", () => {
+    // Two gold cards stay in hand; the played pair clears the small-blind target.
+    const goldA = withMod(cardOne("3D"), { enhancement: "gold" });
+    const goldB = withMod(cardOne("7C"), { enhancement: "gold" });
+    const run = runWith({
+      hand: [cardOne("KH"), cardOne("KS"), goldA, goldB, cardOne("9S")],
+      target: 50,
+      blindIndex: 0,
+      handsRemaining: 3,
+      money: 0,
+    });
+    playHand(run, ["KH", "KS"]);
+    expect(run.status).toBe("shop");
+    expect(run.heldGoldRoundEnd).toBe(true);
+    // gold pays $3 × 2 = $6 BEFORE interest, so $6 held → +$1 interest in cash-out.
+    // money = 0 + 6 (gold) + 3 (blindBase) + 2 (handsBonus) + 1 (interest on $6) = 12
+    expect(run.money).toBe(12);
+  });
+
+  it("no gold held → heldGoldRoundEnd stays false, no payout", () => {
+    const run = runWith({
+      hand: cards("KH KS 3D 7C 9S"),
+      target: 50,
+      blindIndex: 0,
+      handsRemaining: 3,
+      money: 0,
+    });
+    playHand(run, ["KH", "KS"]);
+    expect(run.status).toBe("shop");
+    expect(run.heldGoldRoundEnd).toBe(false);
+    expect(run.money).toBe(5); // just the standard cash-out
   });
 });
