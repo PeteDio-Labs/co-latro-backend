@@ -33,6 +33,31 @@ export type ConsumableEffect =
   | { kind: "sell_jokers_value"; cap: number }
   | { kind: "increase_rank_selected"; max: number }
   | { kind: "copy_card" }
+  // ----- spectral additions (PET-72) -----
+  /** Destroy N random cards from the hand (no selection). */
+  | { kind: "destroy_random_cards"; n: number }
+  /** Familiar: destroy 1 random hand card + add `add` random face cards (J/Q/K) to the deck. */
+  | { kind: "familiar"; destroy: number; add: number }
+  /** Grim: destroy 1 random hand card + add `add` random Aces to the deck. */
+  | { kind: "grim"; destroy: number; add: number }
+  /** Incantation: destroy 1 random hand card + add `add` random numbered (2-9) cards to the deck. */
+  | { kind: "incantation"; destroy: number; add: number }
+  /** Sigil: convert every card currently in hand to a single random suit (persisted in deckComposition). */
+  | { kind: "suit_convert_hand" }
+  /** Ouija: convert every card currently in hand to a single random rank (persisted in deckComposition). */
+  | { kind: "rank_convert_hand" }
+  /** Immolate: destroy 5 random hand cards + gain $20. */
+  | { kind: "immolate"; destroy: number; money: number }
+  /** Wraith: gain a random Rare joker, then set money to 0 (downside). */
+  | { kind: "wraith" }
+  /** Ankh: duplicate one random owned joker, destroy the rest. */
+  | { kind: "ankh" }
+  /** Cryptid: duplicate the selected card N times (added to deckComposition + hand if space). */
+  | { kind: "cryptid_duplicate"; copies: number }
+  /** Destroy N random owned jokers (no-op if none owned). */
+  | { kind: "destroy_random_jokers"; n: number }
+  /** Set the run's money to 0 (downside primitive — reused by Wraith if composed). */
+  | { kind: "lose_all_money" }
   | { kind: "noop" };
 
 export interface ConsumableDef {
@@ -196,6 +221,143 @@ export const CONSUMABLES: ConsumableDef[] = [
     cost: 3,
     needsSelection: { min: 1, max: 1, from: "hand" },
     effect: { kind: "enhance_selected", enhancement: "stone", count: 1 },
+  },
+
+  // ----- Spectral catalog (PET-72). All spectrals cost 4 and stay catalog-only for now
+  // (shop filters them out — they only enter a run via The High Priestess kind2:"spectral"
+  // path or future Spectral booster packs in PET-70).
+  {
+    id: "familiar",
+    name: "Familiar",
+    description: "Destroys 1 random card in hand, adds 3 random face cards to your deck",
+    kind: "spectral",
+    cost: 4,
+    effect: { kind: "familiar", destroy: 1, add: 3 },
+  },
+  {
+    id: "grim",
+    name: "Grim",
+    description: "Destroys 1 random card in hand, adds 2 random Aces to your deck",
+    kind: "spectral",
+    cost: 4,
+    effect: { kind: "grim", destroy: 1, add: 2 },
+  },
+  {
+    id: "incantation",
+    name: "Incantation",
+    description: "Destroys 1 random card in hand, adds 4 random numbered (2-9) cards to your deck",
+    kind: "spectral",
+    cost: 4,
+    effect: { kind: "incantation", destroy: 1, add: 4 },
+  },
+  {
+    id: "talisman",
+    name: "Talisman",
+    description: "Adds a Gold Seal to 1 selected card",
+    kind: "spectral",
+    cost: 4,
+    needsSelection: { min: 1, max: 1, from: "hand" },
+    effect: { kind: "seal_selected", seal: "gold", count: 1 },
+  },
+  {
+    id: "aura",
+    name: "Aura",
+    description: "Adds Foil, Holographic, or Polychrome edition to a card in hand (DEFERRED)",
+    kind: "spectral",
+    cost: 4,
+    effect: { kind: "noop" },
+  },
+  {
+    id: "wraith",
+    name: "Wraith",
+    description: "Creates a random Rare Joker, sets your money to $0",
+    kind: "spectral",
+    cost: 4,
+    effect: { kind: "wraith" },
+  },
+  {
+    id: "sigil",
+    name: "Sigil",
+    description: "Converts all cards in hand to a single random suit",
+    kind: "spectral",
+    cost: 4,
+    effect: { kind: "suit_convert_hand" },
+  },
+  {
+    id: "ouija",
+    name: "Ouija",
+    description: "Converts all cards in hand to a single random rank",
+    kind: "spectral",
+    cost: 4,
+    effect: { kind: "rank_convert_hand" },
+  },
+  {
+    id: "ectoplasm",
+    name: "Ectoplasm",
+    description: "Adds Negative to a random Joker, -1 hand size (DEFERRED)",
+    kind: "spectral",
+    cost: 4,
+    effect: { kind: "noop" },
+  },
+  {
+    id: "immolate",
+    name: "Immolate",
+    description: "Destroys 5 random cards in hand, gain $20",
+    kind: "spectral",
+    cost: 4,
+    effect: { kind: "immolate", destroy: 5, money: 20 },
+  },
+  {
+    id: "ankh",
+    name: "Ankh",
+    description: "Creates a copy of a random Joker, destroys all other Jokers",
+    kind: "spectral",
+    cost: 4,
+    effect: { kind: "ankh" },
+  },
+  {
+    id: "deja_vu",
+    name: "Déjà Vu",
+    description: "Adds a Red Seal to 1 selected card",
+    kind: "spectral",
+    cost: 4,
+    needsSelection: { min: 1, max: 1, from: "hand" },
+    effect: { kind: "seal_selected", seal: "red", count: 1 },
+  },
+  {
+    id: "hex",
+    name: "Hex",
+    description: "Adds Polychrome to a random Joker, destroys all other Jokers (DEFERRED)",
+    kind: "spectral",
+    cost: 4,
+    effect: { kind: "noop" },
+  },
+  {
+    id: "trance",
+    name: "Trance",
+    description: "Adds a Blue Seal to 1 selected card",
+    kind: "spectral",
+    cost: 4,
+    needsSelection: { min: 1, max: 1, from: "hand" },
+    effect: { kind: "seal_selected", seal: "blue", count: 1 },
+  },
+  {
+    id: "medium",
+    name: "Medium",
+    description: "Adds a Purple Seal to 1 selected card",
+    kind: "spectral",
+    cost: 4,
+    needsSelection: { min: 1, max: 1, from: "hand" },
+    effect: { kind: "seal_selected", seal: "purple", count: 1 },
+  },
+  {
+    id: "cryptid",
+    name: "Cryptid",
+    description: "Creates 2 copies of 1 selected card",
+    kind: "spectral",
+    cost: 4,
+    needsSelection: { min: 1, max: 1, from: "hand" },
+    effect: { kind: "cryptid_duplicate", copies: 2 },
   },
 ];
 

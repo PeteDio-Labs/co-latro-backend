@@ -216,3 +216,154 @@ describe("useConsumable — create_consumable", () => {
     }
   });
 });
+
+// ---- Spectrals (PET-72) ----------------------------------------------------
+
+describe("CONSUMABLES catalog — spectrals", () => {
+  it("ships a non-empty spectral catalog, all cost 4 and kind 'spectral'", () => {
+    const spectrals = [...CONSUMABLE_BY_ID.values()].filter((c) => c.kind === "spectral");
+    expect(spectrals.length).toBeGreaterThanOrEqual(12);
+    for (const s of spectrals) {
+      expect(s.cost).toBe(4);
+      expect(s.kind).toBe("spectral");
+    }
+  });
+});
+
+describe("useConsumable — spectrals (deck mutations)", () => {
+  it("Familiar destroys 1 hand card and appends 3 face-card faces to deckComposition", () => {
+    const run = makeRun({ hand: cards("2C 3D 4H 5S 6C") });
+    const compBefore = run.deckComposition.length;
+    const id = giveTarot(run, "familiar", "inst-fam");
+    // rng → 0: destroys hand[0] (2C); adds faces deterministically.
+    useConsumable(run, id, undefined, () => 0);
+    // One card gone from hand, three appended to deckComposition (net +2).
+    expect(run.hand.length).toBe(4);
+    expect(run.deckComposition.length).toBe(compBefore - 1 + 3);
+    // The 2C face was removed from composition (no longer present at all — standard deck holds one).
+    expect(run.deckComposition.includes("2C")).toBe(false);
+  });
+
+  it("Grim adds 2 Aces to the deck composition", () => {
+    const run = makeRun({ hand: cards("2C 3D 4H 5S") });
+    const compBefore = run.deckComposition.length;
+    const id = giveTarot(run, "grim", "inst-grim");
+    useConsumable(run, id, undefined, () => 0);
+    // Net: -1 (destroyed) + 2 (added Aces) = +1 face slots.
+    expect(run.deckComposition.length).toBe(compBefore - 1 + 2);
+    // The 2 added faces are Aces (rank 14 → 'A'); count Ace face codes added.
+    const aces = run.deckComposition.filter((f) => f.startsWith("A")).length;
+    // Standard deck already has 4 Aces; Grim adds 2 → 6.
+    expect(aces).toBe(6);
+  });
+
+  it("Incantation adds numbered (2-9) cards to the deck composition", () => {
+    const run = makeRun({ hand: cards("KH KD KC KS") });
+    const compBefore = run.deckComposition.length;
+    const id = giveTarot(run, "incantation", "inst-inc");
+    useConsumable(run, id, undefined, () => 0);
+    // -1 destroyed, +4 numbered → net +3 face slots.
+    expect(run.deckComposition.length).toBe(compBefore - 1 + 4);
+  });
+
+  it("Sigil converts every card in hand to a single random suit (and persists in composition)", () => {
+    const run = makeRun({ hand: cards("2C 3D 4H 5S 6C") });
+    const id = giveTarot(run, "sigil", "inst-sig");
+    // rng = 0 → first suit in ["clubs","diamonds","hearts","spades"] = "clubs".
+    useConsumable(run, id, undefined, () => 0);
+    for (const card of run.hand) {
+      expect(card.suit).toBe("clubs");
+    }
+    // The new face codes are present in deckComposition (each rank now suit "C").
+    expect(run.deckComposition.includes("2C")).toBe(true);
+    expect(run.deckComposition.includes("3C")).toBe(true);
+    expect(run.deckComposition.includes("4C")).toBe(true);
+    expect(run.deckComposition.includes("5C")).toBe(true);
+    expect(run.deckComposition.includes("6C")).toBe(true);
+  });
+
+  it("Ouija converts every card in hand to a single random rank", () => {
+    const run = makeRun({ hand: cards("2C 3D 4H 5S") });
+    const id = giveTarot(run, "ouija", "inst-ou");
+    // rng = 0 → first rank in [2..14] = 2.
+    useConsumable(run, id, undefined, () => 0);
+    for (const card of run.hand) {
+      expect(card.rank).toBe(2);
+    }
+  });
+});
+
+describe("useConsumable — spectrals (jokers + money)", () => {
+  it("Wraith grants a random Rare joker and wipes money to 0", () => {
+    const run = makeRun({ hand: cards("2C"), money: 50, jokers: [] });
+    const id = giveTarot(run, "wraith", "inst-wr");
+    useConsumable(run, id, undefined, () => 0);
+    expect(run.money).toBe(0);
+    expect(run.jokers.length).toBe(1);
+    // The_duo is the only rare in PET-71 catalog.
+    expect(run.jokers[0]).toBe("the_duo");
+  });
+
+  it("Immolate destroys 5 hand cards and gives $20", () => {
+    const run = makeRun({ hand: cards("2C 3D 4H 5S 6C 7D 8H"), money: 5 });
+    const id = giveTarot(run, "immolate", "inst-im");
+    useConsumable(run, id, undefined, () => 0);
+    expect(run.hand.length).toBe(2);
+    expect(run.money).toBe(25);
+  });
+
+  it("Ankh duplicates a random owned joker and destroys the rest", () => {
+    const run = makeRun({ hand: cards("2C"), jokers: ["joker", "the_duo", "banner"] });
+    const id = giveTarot(run, "ankh", "inst-ankh");
+    // rng = 0 → keep jokers[0] (joker), duplicate it.
+    useConsumable(run, id, undefined, () => 0);
+    expect(run.jokers).toEqual(["joker", "joker"]);
+  });
+});
+
+describe("useConsumable — spectrals (selection-based)", () => {
+  it("Talisman applies a Gold Seal to the selected card", () => {
+    const run = makeRun({ hand: cards("KH 2C 3D 4H 5S") });
+    const id = giveTarot(run, "talisman", "inst-tal");
+    useConsumable(run, id, ["KH"]);
+    expect(run.hand.find((c) => c.id === "KH")!.seal).toBe("gold");
+    expect(run.deckEnhancements?.["KH"]?.seal).toBe("gold");
+  });
+
+  it("Déjà Vu applies a Red Seal to the selected card", () => {
+    const run = makeRun({ hand: cards("KH 2C 3D 4H 5S") });
+    const id = giveTarot(run, "deja_vu", "inst-dv");
+    useConsumable(run, id, ["KH"]);
+    expect(run.hand.find((c) => c.id === "KH")!.seal).toBe("red");
+  });
+
+  it("Cryptid creates 2 copies of the selected card in hand and deckComposition", () => {
+    const run = makeRun({ hand: cards("AS 2C 3D") });
+    const compBefore = run.deckComposition.length;
+    const id = giveTarot(run, "cryptid", "inst-cr");
+    useConsumable(run, id, ["AS"], () => 0);
+    // 2 copies added to deckComposition.
+    expect(run.deckComposition.length).toBe(compBefore + 2);
+    // Hand grew by 2 clones of AS (rank 14, suit spades).
+    const spadeAces = run.hand.filter((c) => c.rank === 14 && c.suit === "spades");
+    expect(spadeAces.length).toBe(3); // original + 2 clones
+  });
+});
+
+describe("useConsumable — spectrals (deferred placeholders)", () => {
+  it("Aura is consumed but is a no-op (deferred)", () => {
+    const run = makeRun({ hand: cards("2C"), money: 10 });
+    const id = giveTarot(run, "aura", "inst-au");
+    useConsumable(run, id);
+    expect(run.money).toBe(10);
+    expect(run.consumables).toEqual([]);
+  });
+
+  it("Ectoplasm is consumed but is a no-op (deferred — negative joker edition pending)", () => {
+    const run = makeRun({ hand: cards("2C"), money: 10 });
+    const id = giveTarot(run, "ectoplasm", "inst-ec");
+    useConsumable(run, id);
+    expect(run.money).toBe(10);
+    expect(run.consumables).toEqual([]);
+  });
+});

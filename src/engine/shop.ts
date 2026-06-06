@@ -155,7 +155,13 @@ export function generateShop(run: RunState, rng: () => number = Math.random): Sh
     JOKERS.filter((j) => !owned.has(j.id)),
     rng,
   );
-  const consumablePool = shuffle(CONSUMABLES, rng);
+  // Spectrals (PET-72) stay catalog-only — they only enter a run via The High Priestess
+  // (create_consumable kind2:"spectral") or future Spectral booster packs (PET-70), never
+  // as a normal shop roll.
+  const consumablePool = shuffle(
+    CONSUMABLES.filter((c) => c.kind !== "spectral"),
+    rng,
+  );
   const items: ShopItem[] = [];
   let pi = 0;
   let ji = 0;
