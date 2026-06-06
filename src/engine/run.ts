@@ -434,10 +434,10 @@ export function playHand(
   draw(run, selected.length);
 
   // Economy jokers pay out at end of each hand played (before the shop transition so the
-  // money shows on the shop screen).
+  // money shows on the shop screen). Tolerate unknown ids (tests stuff synthetic joker ids).
   for (const jid of run.jokers) {
-    const def = getJoker(jid);
-    if (def.effect.kind === "economy_per_hand_played") run.money += def.effect.dollars;
+    const def = JOKERS.find((j) => j.id === jid);
+    if (def?.effect.kind === "economy_per_hand_played") run.money += def.effect.dollars;
   }
   // The Hook (PET-83): at the end of each played hand, discard 2 random cards and redraw.
   if (run.currentBossEffect === "the_hook") applyHookDiscard(run, rng);
