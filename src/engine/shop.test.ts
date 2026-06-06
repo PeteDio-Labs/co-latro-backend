@@ -57,7 +57,7 @@ describe("buyItem — planet", () => {
     const run = startRun("medium", "u");
     run.status = "shop";
     run.money = 10;
-    run.shop = { items: [{ ...planetSaturn }], rerollCost: 5 };
+    run.shop = { items: [{ ...planetSaturn }], rerollCost: 5, voucher: null };
     buyItem(run, "planet:saturn");
     expect(run.money).toBe(7);
     expect(run.handLevels.straight).toBe(2);
@@ -70,7 +70,7 @@ describe("buyItem — joker", () => {
     const run = startRun("medium", "u");
     run.status = "shop";
     run.money = 10;
-    run.shop = { items: [jokerItem("joker", 2)], rerollCost: 5 };
+    run.shop = { items: [jokerItem("joker", 2)], rerollCost: 5, voucher: null };
     buyItem(run, "joker:joker");
     expect(run.jokers).toEqual(["joker"]);
     expect(run.money).toBe(8);
@@ -82,7 +82,7 @@ describe("buyItem — joker", () => {
     run.status = "shop";
     run.money = 100;
     run.jokers = ["joker", "jolly_joker", "sly_joker", "half_joker", "banner"]; // 5 = MAX
-    run.shop = { items: [jokerItem("the_duo", 8)], rerollCost: 5 };
+    run.shop = { items: [jokerItem("the_duo", 8)], rerollCost: 5, voucher: null };
     expect(() => buyItem(run, "joker:the_duo")).toThrow(GameError);
     expect(run.money).toBe(100);
     expect(run.jokers.length).toBe(5);

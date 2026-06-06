@@ -26,6 +26,21 @@ function normalizeRun(state: RunState): RunState {
   s.deckId ??= "standard";
   s.deckName ??= "Standard Deck";
   s.pendingRewardBreakdown ??= null;
+  // PET-67 foundation slots — empty-defaults so older saves load cleanly.
+  s.consumables ??= [];
+  s.maxConsumables ??= 2;
+  s.vouchers ??= [];
+  s.tags ??= [];
+  s.skipsThisRun ??= 0;
+  s.currentBossEffect ??= null;
+  s.jokerStates ??= {};
+  s.discardsUsedThisBlind ??= 0;
+  s.heldGoldRoundEnd ??= false;
+  // Persisted shop state may pre-date the voucher slot — default it to null.
+  if (s.shop && typeof s.shop === "object") {
+    const sh = s.shop as Record<string, unknown>;
+    sh.voucher ??= null;
+  }
   return state;
 }
 

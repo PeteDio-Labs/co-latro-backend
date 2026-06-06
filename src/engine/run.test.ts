@@ -37,6 +37,15 @@ function runWith(over: Partial<RunState> & { hand: RunState["hand"] }): RunState
     pendingReward: null,
     pendingRewardBreakdown: null,
     shop: null,
+    consumables: [],
+    maxConsumables: 2,
+    vouchers: [],
+    tags: [],
+    skipsThisRun: 0,
+    currentBossEffect: null,
+    jokerStates: {},
+    discardsUsedThisBlind: 0,
+    heldGoldRoundEnd: false,
     createdAt: 0,
     updatedAt: 0,
     ...over,
@@ -172,7 +181,7 @@ describe("continueRun (ante/blind advance)", () => {
       ante: 1,
       blindIndex: 0,
       pendingReward: 5,
-      shop: { items: [], rerollCost: 5 },
+      shop: { items: [], rerollCost: 5, voucher: null },
     });
     continueRun(run);
     expect(run.status).toBe("selecting_blind");

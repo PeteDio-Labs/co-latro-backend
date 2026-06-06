@@ -33,8 +33,19 @@ import {
 } from "./ante.ts";
 import { getDeck } from "./decks.ts";
 import { generateShop, type ShopState } from "./shop.ts";
-import { MAX_JOKERS, getJoker, sellValue } from "./jokers.ts";
+import { getJoker, sellValue } from "./jokers.ts";
 import { GameError } from "./errors.ts";
+import { CONSUMABLE_BY_ID, type ConsumableInstance } from "./consumables.ts";
+import { VOUCHER_BY_ID } from "./vouchers.ts";
+import { TAG_BY_ID, type TagTrigger } from "./tags.ts";
+import { BOSS_EFFECT_BY_ID, rollBossEffect } from "./boss.ts";
+import {
+  effectiveExtraDiscards,
+  effectiveExtraHands,
+  effectiveInterestCap,
+  effectiveMaxConsumables,
+  effectiveMaxJokers,
+} from "./effectives.ts";
 
 export { GameError } from "./errors.ts";
 
@@ -74,6 +85,19 @@ export interface RunState {
   pendingReward: number | null;
   pendingRewardBreakdown: CashOutBreakdown | null;
   shop: ShopState | null;
+
+  // ----- extension slots (PET-67 foundation; empty-default until content streams populate) -----
+  consumables: ConsumableInstance[];
+  maxConsumables: number;
+  vouchers: string[];
+  tags: string[];
+  skipsThisRun: number;
+  currentBossEffect: string | null;
+  jokerStates: Record<string, { counter: number }>;
+  discardsUsedThisBlind: number;
+  /** Marker for gold-enhancement payout at round end (PET-75 reads this). */
+  heldGoldRoundEnd: boolean;
+
   createdAt: number;
   updatedAt: number;
 }
@@ -85,6 +109,33 @@ export interface JokerView {
   description: string;
   cost: number;
   sellValue: number;
+}
+
+/** A consumable as the client sees it (resolved from CONSUMABLE_BY_ID). */
+export interface ConsumableView {
+  id: string; // per-run instance id
+  defId: string;
+  name: string;
+  description: string;
+  kind: "tarot" | "planet" | "spectral";
+}
+
+export interface VoucherView {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export interface TagView {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export interface BossEffectView {
+  id: string;
+  name: string;
+  description: string;
 }
 
 /** Client-safe view: everything the UI needs, minus the hidden deck/composition. */
@@ -114,6 +165,13 @@ export interface RunStateDTO {
   pendingReward: number | null;
   pendingRewardBreakdown: CashOutBreakdown | null;
   shop: ShopState | null;
+  // ----- extension surface (empty by default until content streams populate) -----
+  consumables: ConsumableView[];
+  maxConsumables: number;
+  vouchers: VoucherView[];
+  tags: TagView[];
+  bossEffect: BossEffectView | null;
+  skipsThisRun: number;
 }
 
 /** The single chokepoint that strips the hidden deck + composition before anything reaches the client. */
@@ -139,7 +197,7 @@ export function toRunDTO(run: RunState): RunStateDTO {
         sellValue: sellValue(def.cost),
       };
     }),
-    maxJokers: MAX_JOKERS,
+    maxJokers: effectiveMaxJokers(run),
     target: run.target,
     totalScore: run.totalScore,
     hand: run.hand,
@@ -153,6 +211,26 @@ export function toRunDTO(run: RunState): RunStateDTO {
     pendingReward: run.pendingReward,
     pendingRewardBreakdown: run.pendingRewardBreakdown,
     shop: run.shop,
+    consumables: run.consumables.flatMap((c) => {
+      const def = CONSUMABLE_BY_ID.get(c.defId);
+      if (!def) return []; // skip unknown defIds rather than crash the DTO
+      return [{ id: c.id, defId: def.id, name: def.name, description: def.description, kind: def.kind }];
+    }),
+    maxConsumables: effectiveMaxConsumables(run),
+    vouchers: run.vouchers.flatMap((id) => {
+      const def = VOUCHER_BY_ID.get(id);
+      return def ? [{ id: def.id, name: def.name, description: def.description }] : [];
+    }),
+    tags: run.tags.flatMap((id) => {
+      const def = TAG_BY_ID.get(id);
+      return def ? [{ id: def.id, name: def.name, description: def.description }] : [];
+    }),
+    bossEffect: (() => {
+      if (!run.currentBossEffect) return null;
+      const def = BOSS_EFFECT_BY_ID.get(run.currentBossEffect);
+      return def ? { id: def.id, name: def.name, description: def.description } : null;
+    })(),
+    skipsThisRun: run.skipsThisRun,
   };
 }
 
@@ -182,6 +260,15 @@ export function startRun(difficulty: Difficulty, userId: string, deckId = "stand
     pendingReward: null,
     pendingRewardBreakdown: null,
     shop: null,
+    consumables: [],
+    maxConsumables: 2,
+    vouchers: [],
+    tags: [],
+    skipsThisRun: 0,
+    currentBossEffect: null,
+    jokerStates: {},
+    discardsUsedThisBlind: 0,
+    heldGoldRoundEnd: false,
     createdAt: now,
     updatedAt: now,
   };
@@ -200,12 +287,16 @@ export function startBlind(run: RunState, rng: () => number = Math.random): void
   run.totalScore = 0;
   const tuning = DIFFICULTY_TUNING[run.difficulty];
   const perk = getDeck(run.deckId).perk;
-  run.handsRemaining = tuning.hands + (perk.extraHands ?? 0);
-  run.discardsRemaining = tuning.discards + (perk.extraDiscards ?? 0);
+  run.handsRemaining = tuning.hands + (perk.extraHands ?? 0) + effectiveExtraHands(run);
+  run.discardsRemaining = tuning.discards + (perk.extraDiscards ?? 0) + effectiveExtraDiscards(run);
   run.lastPlay = null;
   run.pendingReward = null;
   run.pendingRewardBreakdown = null;
+  run.discardsUsedThisBlind = 0;
+  run.currentBossEffect = blindKind(run.blindIndex) === "boss" ? rollBossEffect(run.ante, rng) : null;
   run.status = "playing";
+  if (run.currentBossEffect) applyBossEffect(run, "start");
+  applyTags(run, "on_next_blind_start");
 }
 
 /** Sell a joker for half its cost. Allowed while playing or shopping. */
@@ -266,6 +357,9 @@ export function playHand(
   const selected = resolveSelection(run, selectedIds);
   const ids = selected.map((c) => c.id);
 
+  // Hook for boss effects that mutate selection/scoring before resolution (PET-78).
+  if (run.currentBossEffect) applyBossEffect(run, "play");
+
   const breakdown = scoreHand(selected, scoreCtx(run));
   run.totalScore += breakdown.score;
   run.handsRemaining -= 1;
@@ -291,6 +385,7 @@ export function discardCards(
   const ids = selected.map((c) => c.id);
 
   run.discardsRemaining -= 1;
+  run.discardsUsedThisBlind += 1;
   removeFromHand(run, ids);
   draw(run, selected.length);
   checkTransition(run, rng); // only the softlock guard is reachable here (no score change)
@@ -365,16 +460,103 @@ function ensurePlaying(run: RunState): void {
 /** Win → shop (+reward, generate shop), then lose-on-exhaustion, then a softlock guard. */
 function checkTransition(run: RunState, rng: () => number): void {
   if (run.totalScore >= run.target) {
-    const breakdown = cashOutMoney(run.blindIndex, run.handsRemaining, run.money);
+    if (run.currentBossEffect) applyBossEffect(run, "end");
+    const breakdown = cashOutMoney(
+      run.blindIndex,
+      run.handsRemaining,
+      run.money,
+      effectiveInterestCap(run),
+    );
     run.pendingRewardBreakdown = breakdown;
     run.pendingReward = breakdown.blindBase + breakdown.handsBonus + breakdown.interest;
     run.money += run.pendingReward;
     run.status = "shop";
     run.shop = generateShop(run, rng);
+    applyTags(run, "on_shop_enter");
   } else if (run.handsRemaining <= 0) {
     run.status = "lost_run";
   } else if (run.hand.length === 0 && run.deck.length === 0) {
     run.status = "lost_run"; // can no longer act
+  }
+}
+
+// ---- extension hooks (skeletons; no-ops when catalogs are empty) -----------
+
+/** Iterate run.tags and fire those matching `trigger`. No-op when TAGS is empty / unknown ids. */
+function applyTags(run: RunState, _trigger: TagTrigger): void {
+  if (run.tags.length === 0) return;
+  // Content stream PET-83 wires actual handlers here per TagEffect.kind.
+  // Resolved tags whose triggers don't match are skipped.
+  for (const id of run.tags) {
+    const def = TAG_BY_ID.get(id);
+    if (!def) continue;
+    if (def.trigger !== _trigger) continue;
+    // no-op handler skeleton: real effect handlers land with PET-83
+  }
+}
+
+/** Apply the active boss effect for a given phase. No-op when no boss effect set. */
+function applyBossEffect(run: RunState, _phase: "start" | "play" | "end"): void {
+  if (!run.currentBossEffect) return;
+  const def = BOSS_EFFECT_BY_ID.get(run.currentBossEffect);
+  if (!def) return;
+  // Content stream PET-78 wires phase-specific behavior off `def` here.
+}
+
+/** Use a consumable from a run slot. No-op skeleton until PET-71/72 populate CONSUMABLES. */
+export function useConsumable(
+  run: RunState,
+  instanceId: unknown,
+  _selectedCardIds?: unknown,
+): void {
+  if (run.status !== "playing" && run.status !== "shop") {
+    throw new GameError(409, "bad_state", "Can only use consumables while playing or shopping");
+  }
+  if (typeof instanceId !== "string") {
+    throw new GameError(400, "invalid_consumable", "instanceId must be a string");
+  }
+  const idx = run.consumables.findIndex((c) => c.id === instanceId);
+  if (idx < 0) throw new GameError(404, "consumable_not_found", "Consumable not owned");
+  const inst = run.consumables[idx]!;
+  const def = CONSUMABLE_BY_ID.get(inst.defId);
+  if (!def) throw new GameError(400, "unimplemented", "Consumable effect not implemented");
+  // Content streams (PET-71 tarot / PET-72 spectral) interpret def.effect here, validate
+  // _selectedCardIds against def.needsSelection, then mutate run accordingly.
+  throw new GameError(400, "unimplemented", "Consumable effect not implemented");
+}
+
+/** Sell a consumable for half its catalog cost. Mirrors sellJoker. */
+export function sellConsumable(run: RunState, instanceId: unknown): void {
+  if (run.status !== "playing" && run.status !== "shop") {
+    throw new GameError(409, "bad_state", "Can only sell consumables while playing or shopping");
+  }
+  if (typeof instanceId !== "string") {
+    throw new GameError(400, "invalid_consumable", "instanceId must be a string");
+  }
+  const idx = run.consumables.findIndex((c) => c.id === instanceId);
+  if (idx < 0) throw new GameError(404, "consumable_not_found", "Consumable not owned");
+  const inst = run.consumables[idx]!;
+  const def = CONSUMABLE_BY_ID.get(inst.defId);
+  // Unknown defId → fall back to a $1 refund so legacy / orphaned consumables can be cleared.
+  run.money += def ? sellValue(def.cost) : 1;
+  run.consumables.splice(idx, 1);
+}
+
+/** Skip the upcoming blind, awarding a tag (when TAGS is populated). No-op-friendly. */
+export function skipBlind(run: RunState, _rng: () => number = Math.random): void {
+  if (run.status !== "selecting_blind") {
+    throw new GameError(409, "bad_state", "Can only skip from the blind-select screen");
+  }
+  // Balatro: only small/big are skippable — boss must be played.
+  if (blindKind(run.blindIndex) === "boss") {
+    throw new GameError(400, "cannot_skip_boss", "The boss blind cannot be skipped");
+  }
+  run.skipsThisRun += 1;
+  applyTags(run, "on_blind_skip");
+  // Advance to the next blind (content stream PET-83 awards the skip-tag reward).
+  if (run.blindIndex < 2) {
+    run.blindIndex += 1;
+    run.target = blindTarget(run.ante, run.blindIndex, run.difficulty);
   }
 }
 

@@ -11,10 +11,18 @@ export type Suit = "clubs" | "diamonds" | "hearts" | "spades";
 /** Numeric rank for ordering / straight math. 11=J 12=Q 13=K 14=A. */
 export type Rank = 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14;
 
+/** Per-card modifiers (Balatro). All optional; absent === plain card (no behavior change). */
+export type CardEnhancement = "bonus" | "mult" | "wild" | "glass" | "steel" | "stone" | "gold" | "lucky";
+export type CardEdition = "foil" | "holo" | "poly" | "negative";
+export type CardSeal = "red" | "blue" | "gold" | "purple";
+
 export interface Card {
   id: string;
   rank: Rank;
   suit: Suit;
+  enhancement?: CardEnhancement;
+  edition?: CardEdition;
+  seal?: CardSeal;
 }
 
 export const ALL_SUITS: readonly Suit[] = ["clubs", "diamonds", "hearts", "spades"];
