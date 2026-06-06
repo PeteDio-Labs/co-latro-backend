@@ -42,10 +42,11 @@ describe("generateShop", () => {
     expect(shop.rerollCost).toBe(5);
   });
 
-  it("joker roll (rng→0): 3 distinct jokers, none already owned", () => {
+  it("joker roll (rng→0.3): 3 distinct jokers, none already owned", () => {
     const run = startRun("medium", "u");
     run.jokers = ["joker"]; // owned — must be excluded
-    const shop = generateShop(run, () => 0);
+    // 0.3 >= PACK_WEIGHT (0.1) → no pack; 0.3 < JOKER_WEIGHT (0.45) → joker each slot.
+    const shop = generateShop(run, () => 0.3);
     expect(shop.items.every((i) => i.kind === "joker")).toBe(true);
     expect(new Set(shop.items.map((i) => i.id)).size).toBe(SHOP_ITEM_COUNT);
     expect(shop.items.some((i) => i.kind === "joker" && i.jokerId === "joker")).toBe(false);

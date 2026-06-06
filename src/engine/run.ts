@@ -36,7 +36,8 @@ import {
   type CashOutBreakdown,
 } from "./ante.ts";
 import { getDeck } from "./decks.ts";
-import { generateShop, levelUpHand, type ShopState } from "./shop.ts";
+import { generateShop, levelUpHand, openPack, type ShopState } from "./shop.ts";
+import { packIdForKind, type OpeningPack, type PackKind } from "./packs.ts";
 import { JOKERS, getJoker, sellValue } from "./jokers.ts";
 import { GameError } from "./errors.ts";
 import {
@@ -59,7 +60,7 @@ import {
 
 export { GameError } from "./errors.ts";
 
-export type RunStatus = "selecting_blind" | "playing" | "shop" | "won_run" | "lost_run";
+export type RunStatus = "selecting_blind" | "playing" | "shop" | "pack_open" | "won_run" | "lost_run";
 
 export interface PlayResult {
   playedCardIds: string[];
@@ -95,6 +96,9 @@ export interface RunState {
   pendingReward: number | null;
   pendingRewardBreakdown: CashOutBreakdown | null;
   shop: ShopState | null;
+
+  /** Transient booster-pack state — non-null when status === "pack_open". */
+  openingPack: OpeningPack | null;
 
   // ----- extension slots (PET-67 foundation; empty-default until content streams populate) -----
   consumables: ConsumableInstance[];
@@ -192,6 +196,8 @@ export interface RunStateDTO {
   tags: TagView[];
   bossEffect: BossEffectView | null;
   skipsThisRun: number;
+  /** Non-null while status === "pack_open" — the contents/picks the picker UI renders. */
+  openingPack: OpeningPack | null;
 }
 
 /** The single chokepoint that strips the hidden deck + composition before anything reaches the client. */
@@ -251,6 +257,7 @@ export function toRunDTO(run: RunState): RunStateDTO {
       return def ? { id: def.id, name: def.name, description: def.description } : null;
     })(),
     skipsThisRun: run.skipsThisRun,
+    openingPack: run.openingPack,
   };
 }
 
@@ -290,6 +297,7 @@ export function startRun(difficulty: Difficulty, userId: string, deckId = "stand
     discardsUsedThisBlind: 0,
     heldGoldRoundEnd: false,
     deckEnhancements: {},
+    openingPack: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -549,10 +557,21 @@ function applyTags(run: RunState, trigger: TagTrigger, rng: () => number = Math.
         run.jokers.push(pick.id);
         break;
       }
-      case "mult_add_next_hand":
-      case "free_voucher":
       case "free_pack": {
-        // Deferred effects — packs/vouchers/transient bonuses land with PET-70 / later voucher pass.
+        // PET-70 wires this: open a free pack (cost 0). Only one pack can be open at a time —
+        // if another tag already opened a pack this frame, keep this tag queued for next trigger.
+        if (run.openingPack) {
+          remaining.push(id);
+          continue;
+        }
+        const packId = packIdForKind(effect.packKind as PackKind);
+        const ret = run.status === "selecting_blind" ? "selecting_blind" : "shop";
+        openPack(run, packId, ret);
+        break;
+      }
+      case "mult_add_next_hand":
+      case "free_voucher": {
+        // Deferred effects — transient hand bonus + free voucher land in a later pass.
         // Consume the tag rather than block — these were already "rolled" off the skip.
         break;
       }
