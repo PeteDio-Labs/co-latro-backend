@@ -82,6 +82,41 @@ describe("evaluateHand — hand types", () => {
   });
 });
 
+describe("evaluateHand — secret hands (Balatro)", () => {
+  // The card ids carry suits, so the same rank in different "duplicates" gets distinct ids.
+  // These shapes require Wilds in real play (PET-75); the evaluator still detects them.
+  it("five of a kind (5 same rank, mixed suits)", () => {
+    const r = evaluateHand(cards("9C 9D 9H 9S 9C2"));
+    expect(r.handType).toBe("five_of_a_kind");
+    expect(r.scoringCardIds.length).toBe(5);
+  });
+
+  it("flush house (full house, all one suit)", () => {
+    const r = evaluateHand(cards("KH KH2 KH3 7H 7H2"));
+    expect(r.handType).toBe("flush_house");
+    expect(r.scoringCardIds.length).toBe(5);
+  });
+
+  it("flush five (5 same rank, same suit)", () => {
+    const r = evaluateHand(cards("9C 9C2 9C3 9C4 9C5"));
+    expect(r.handType).toBe("flush_five");
+    expect(r.scoringCardIds.length).toBe(5);
+  });
+
+  it("five of a kind ranks above four of a kind", () => {
+    // Without the new check, 5 nines would fall to four_of_a_kind.
+    expect(evaluateHand(cards("9C 9D 9H 9S 9C2")).handType).toBe("five_of_a_kind");
+  });
+
+  it("flush house ranks above full house and flush", () => {
+    expect(evaluateHand(cards("KH KH2 KH3 7H 7H2")).handType).toBe("flush_house");
+  });
+
+  it("flush five ranks above flush house and five of a kind", () => {
+    expect(evaluateHand(cards("9C 9C2 9C3 9C4 9C5")).handType).toBe("flush_five");
+  });
+});
+
 describe("evaluateHand — fewer than 5 cards", () => {
   it("1-card play is high card", () => {
     const r = evaluateHand([card("AS")]);

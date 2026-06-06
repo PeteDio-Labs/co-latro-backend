@@ -18,7 +18,10 @@ export type HandType =
   | "full_house"
   | "four_of_a_kind"
   | "straight_flush"
-  | "royal_flush";
+  | "royal_flush"
+  | "five_of_a_kind"
+  | "flush_house"
+  | "flush_five";
 
 export interface EvaluatedHand {
   handType: HandType;
@@ -86,10 +89,25 @@ export function evaluateHand(played: Card[]): EvaluatedHand {
   // Royal = ace-high straight flush; ascending min rank is 10 (10-J-Q-K-A).
   const isRoyal = isStraightFlush && ranksAsc[0] === 10;
 
+  // Balatro secret hands. Possible once wild/enhanced cards land (PET-75); the
+  // evaluator still recognises them whenever a 5-card play actually meets the shape.
+  const isFiveOfAKind = n === 5 && top === 5;
+  const isFlushFive = isFiveOfAKind && isFlush;
+  const isFlushHouse = n === 5 && top === 3 && second === 2 && isFlush;
+
   let handType: HandType;
   let scoring: Card[];
 
-  if (isRoyal) {
+  if (isFlushFive) {
+    handType = "flush_five";
+    scoring = played;
+  } else if (isFlushHouse) {
+    handType = "flush_house";
+    scoring = played;
+  } else if (isFiveOfAKind) {
+    handType = "five_of_a_kind";
+    scoring = played;
+  } else if (isRoyal) {
     handType = "royal_flush";
     scoring = played;
   } else if (isStraightFlush) {

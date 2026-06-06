@@ -8,7 +8,8 @@ import type { RunState } from "./run.ts";
 
 export type PlanetId =
   | "pluto" | "mercury" | "uranus" | "venus" | "saturn"
-  | "jupiter" | "earth" | "mars" | "neptune";
+  | "jupiter" | "earth" | "mars" | "neptune"
+  | "planet_x" | "ceres" | "eris";
 
 export interface PlanetDef {
   id: PlanetId;
@@ -26,6 +27,9 @@ export const PLANETS: PlanetDef[] = [
   { id: "earth", name: "Earth", hand: "full_house" },
   { id: "mars", name: "Mars", hand: "four_of_a_kind" },
   { id: "neptune", name: "Neptune", hand: "straight_flush" }, // also levels royal flush
+  { id: "planet_x", name: "Planet X", hand: "five_of_a_kind" },
+  { id: "ceres", name: "Ceres", hand: "flush_house" },
+  { id: "eris", name: "Eris", hand: "flush_five" },
 ];
 
 export const PLANET_COST = 3;

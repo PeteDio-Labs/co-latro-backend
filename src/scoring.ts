@@ -28,6 +28,9 @@ export const BASE_VALUES: Record<HandType, HandBaseValue> = {
   four_of_a_kind: { chips: 60, mult: 7 },
   straight_flush: { chips: 100, mult: 8 },
   royal_flush: { chips: 100, mult: 8 }, // label only; identical score to straight flush
+  five_of_a_kind: { chips: 50, mult: 12 }, // Planet X (secret hand — needs Wilds in practice)
+  flush_house: { chips: 40, mult: 14 }, // Ceres
+  flush_five: { chips: 160, mult: 16 }, // Eris
 };
 
 export const HAND_LABEL: Record<HandType, string> = {
@@ -41,6 +44,9 @@ export const HAND_LABEL: Record<HandType, string> = {
   four_of_a_kind: "Four of a Kind",
   straight_flush: "Straight Flush",
   royal_flush: "Royal Flush",
+  five_of_a_kind: "Five of a Kind",
+  flush_house: "Flush House",
+  flush_five: "Flush Five",
 };
 
 /** Per-level increments (Balatro planet cards). Level 1 = BASE_VALUES; each further level adds this. */
@@ -55,6 +61,9 @@ export const PER_LEVEL: Record<HandType, HandBaseValue> = {
   four_of_a_kind: { chips: 30, mult: 3 }, // Mars
   straight_flush: { chips: 40, mult: 4 }, // Neptune
   royal_flush: { chips: 40, mult: 4 }, // Neptune (shared level with straight flush)
+  five_of_a_kind: { chips: 35, mult: 4 }, // Planet X
+  flush_house: { chips: 40, mult: 4 }, // Ceres
+  flush_five: { chips: 50, mult: 3 }, // Eris
 };
 
 /** Per-run poker-hand levels (1-based). */
