@@ -793,7 +793,145 @@ function applyConsumableEffect(
       }
       return;
     }
+
+    // ----- Spectral effects (PET-72) ---------------------------------------
+
+    case "destroy_random_cards": {
+      destroyRandomFromHand(run, effect.n, rng);
+      return;
+    }
+    case "destroy_random_jokers": {
+      const n = Math.min(effect.n, run.jokers.length);
+      for (let i = 0; i < n; i++) {
+        if (run.jokers.length === 0) return;
+        const idx = Math.floor(rng() * run.jokers.length);
+        run.jokers.splice(idx, 1);
+      }
+      return;
+    }
+    case "lose_all_money": {
+      run.money = 0;
+      return;
+    }
+    case "familiar": {
+      destroyRandomFromHand(run, effect.destroy, rng);
+      const faceRanks: Rank[] = [11, 12, 13];
+      for (let i = 0; i < effect.add; i++) {
+        addRandomCardToDeck(run, faceRanks, rng);
+      }
+      return;
+    }
+    case "grim": {
+      destroyRandomFromHand(run, effect.destroy, rng);
+      const aceRanks: Rank[] = [14];
+      for (let i = 0; i < effect.add; i++) {
+        addRandomCardToDeck(run, aceRanks, rng);
+      }
+      return;
+    }
+    case "incantation": {
+      destroyRandomFromHand(run, effect.destroy, rng);
+      const numbered: Rank[] = [2, 3, 4, 5, 6, 7, 8, 9];
+      for (let i = 0; i < effect.add; i++) {
+        addRandomCardToDeck(run, numbered, rng);
+      }
+      return;
+    }
+    case "suit_convert_hand": {
+      if (run.hand.length === 0) return;
+      const suits: Suit[] = ["clubs", "diamonds", "hearts", "spades"];
+      const pick = suits[Math.floor(rng() * suits.length)]!;
+      for (const card of run.hand) {
+        const oldCode = faceCode({ rank: card.rank, suit: card.suit });
+        card.suit = pick;
+        const newCode = faceCode({ rank: card.rank, suit: card.suit });
+        const compIdx = run.deckComposition.indexOf(oldCode);
+        if (compIdx >= 0) run.deckComposition[compIdx] = newCode;
+      }
+      return;
+    }
+    case "rank_convert_hand": {
+      if (run.hand.length === 0) return;
+      const ranks: Rank[] = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
+      const pick = ranks[Math.floor(rng() * ranks.length)]!;
+      for (const card of run.hand) {
+        const oldCode = faceCode({ rank: card.rank, suit: card.suit });
+        card.rank = pick;
+        const newCode = faceCode({ rank: card.rank, suit: card.suit });
+        const compIdx = run.deckComposition.indexOf(oldCode);
+        if (compIdx >= 0) run.deckComposition[compIdx] = newCode;
+      }
+      // TODO(PET-72): Ouija also subtracts 1 from hand size — deferred until HAND_SIZE is a per-run stat.
+      return;
+    }
+    case "immolate": {
+      destroyRandomFromHand(run, effect.destroy, rng);
+      run.money += effect.money;
+      return;
+    }
+    case "wraith": {
+      // Pick a random Rare joker the player doesn't already own; if none available, no-op the spawn.
+      const owned = new Set(run.jokers);
+      const rares = JOKERS.filter((j) => j.rarity === "rare" && !owned.has(j.id));
+      if (rares.length > 0 && run.jokers.length < effectiveMaxJokers(run)) {
+        const pick = rares[Math.floor(rng() * rares.length)]!;
+        run.jokers.push(pick.id);
+      }
+      // Downside still applies even if joker couldn't be granted (slots full / no eligible rare).
+      run.money = 0;
+      return;
+    }
+    case "ankh": {
+      if (run.jokers.length === 0) return;
+      const idx = Math.floor(rng() * run.jokers.length);
+      const keep = run.jokers[idx]!;
+      run.jokers = [keep, keep];
+      return;
+    }
+    case "cryptid_duplicate": {
+      // Selection guaranteed: needsSelection { min:1, max:1, from:"hand" } enforces 1 card.
+      if (selectedCards.length !== 1) return;
+      const src = selectedCards[0]!;
+      const code = faceCode({ rank: src.rank, suit: src.suit });
+      for (let i = 0; i < effect.copies; i++) {
+        // Append to deckComposition (persists across blinds).
+        run.deckComposition.push(code);
+        // Mint a fresh per-instance id so the in-hand clone is distinguishable.
+        const clone: Card = {
+          id: `${code}-c${run.deckComposition.length}-${Math.floor(rng() * 1e9)}`,
+          rank: src.rank,
+          suit: src.suit,
+        };
+        if (src.enhancement) clone.enhancement = src.enhancement;
+        if (src.edition) clone.edition = src.edition;
+        if (src.seal) clone.seal = src.seal;
+        run.hand.push(clone);
+      }
+      return;
+    }
   }
+}
+
+/** Remove up to `n` random cards from the hand and their face-code occurrence from deckComposition. */
+function destroyRandomFromHand(run: RunState, n: number, rng: () => number): void {
+  const take = Math.min(n, run.hand.length);
+  for (let i = 0; i < take; i++) {
+    if (run.hand.length === 0) return;
+    const idx = Math.floor(rng() * run.hand.length);
+    const [card] = run.hand.splice(idx, 1) as [Card];
+    const code = faceCode({ rank: card.rank, suit: card.suit });
+    const compIdx = run.deckComposition.indexOf(code);
+    if (compIdx >= 0) run.deckComposition.splice(compIdx, 1);
+    if (run.deckEnhancements) delete run.deckEnhancements[card.id];
+  }
+}
+
+/** Append a random card (from the allowed ranks, any suit) to the deckComposition. */
+function addRandomCardToDeck(run: RunState, ranks: Rank[], rng: () => number): void {
+  const suits: Suit[] = ["clubs", "diamonds", "hearts", "spades"];
+  const rank = ranks[Math.floor(rng() * ranks.length)]!;
+  const suit = suits[Math.floor(rng() * suits.length)]!;
+  run.deckComposition.push(faceCode({ rank, suit }));
 }
 
 /** Sell a consumable for half its catalog cost. Mirrors sellJoker. */
