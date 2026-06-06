@@ -44,7 +44,32 @@ export function blindTarget(ante: number, blindIndex: number, difficulty: Diffic
   return Math.round(base * mult * DIFFICULTY_TUNING[difficulty].targetMult);
 }
 
-/** Simplified Balatro cash-out: blind base reward + $1 per remaining hand (interest skipped for MVP). */
-export function cashOutMoney(blindIndex: number, handsRemaining: number): number {
-  return BLIND_REWARD[blindKind(blindIndex)] + Math.max(0, handsRemaining);
+/** Default interest cap ($5). A voucher hook will raise it later (PET-76). */
+export const DEFAULT_INTEREST_CAP = 5;
+
+/** Balatro interest: $1 per $5 held, capped (default $5). */
+export function interestEarned(money: number, cap: number = DEFAULT_INTEREST_CAP): number {
+  if (money <= 0) return 0;
+  return Math.min(cap, Math.floor(money / 5));
+}
+
+/** Cash-out breakdown — each component is a non-negative dollar amount that sums to the payout. */
+export interface CashOutBreakdown {
+  blindBase: number;
+  handsBonus: number;
+  interest: number;
+}
+
+/** Balatro cash-out: blind base reward + $1 per remaining hand + interest ($1 per $5 held, cap $5). */
+export function cashOutMoney(
+  blindIndex: number,
+  handsRemaining: number,
+  money: number = 0,
+  interestCap: number = DEFAULT_INTEREST_CAP,
+): CashOutBreakdown {
+  return {
+    blindBase: BLIND_REWARD[blindKind(blindIndex)],
+    handsBonus: Math.max(0, handsRemaining),
+    interest: interestEarned(money, interestCap),
+  };
 }

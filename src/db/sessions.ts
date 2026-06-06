@@ -18,6 +18,7 @@ function normalizeRun(state: RunState): RunState {
   s.deckComposition ??= standardFaces().map(faceCode);
   s.deckId ??= "standard";
   s.deckName ??= "Standard Deck";
+  s.pendingRewardBreakdown ??= null;
   return state;
 }
 

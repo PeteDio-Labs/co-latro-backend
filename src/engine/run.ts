@@ -29,6 +29,7 @@ import {
   blindTarget,
   cashOutMoney,
   type BlindKind,
+  type CashOutBreakdown,
 } from "./ante.ts";
 import { getDeck } from "./decks.ts";
 import { generateShop, type ShopState } from "./shop.ts";
@@ -71,6 +72,7 @@ export interface RunState {
 
   status: RunStatus;
   pendingReward: number | null;
+  pendingRewardBreakdown: CashOutBreakdown | null;
   shop: ShopState | null;
   createdAt: number;
   updatedAt: number;
@@ -110,6 +112,7 @@ export interface RunStateDTO {
   status: RunStatus;
   lastPlay: PlayResult | null;
   pendingReward: number | null;
+  pendingRewardBreakdown: CashOutBreakdown | null;
   shop: ShopState | null;
 }
 
@@ -148,6 +151,7 @@ export function toRunDTO(run: RunState): RunStateDTO {
     status: run.status,
     lastPlay: run.lastPlay,
     pendingReward: run.pendingReward,
+    pendingRewardBreakdown: run.pendingRewardBreakdown,
     shop: run.shop,
   };
 }
@@ -176,6 +180,7 @@ export function startRun(difficulty: Difficulty, userId: string, deckId = "stand
     lastPlay: null,
     status: "selecting_blind",
     pendingReward: null,
+    pendingRewardBreakdown: null,
     shop: null,
     createdAt: now,
     updatedAt: now,
@@ -199,6 +204,7 @@ export function startBlind(run: RunState, rng: () => number = Math.random): void
   run.discardsRemaining = tuning.discards + (perk.extraDiscards ?? 0);
   run.lastPlay = null;
   run.pendingReward = null;
+  run.pendingRewardBreakdown = null;
   run.status = "playing";
 }
 
@@ -296,6 +302,7 @@ export function continueRun(run: RunState): void {
     throw new GameError(409, "bad_state", "Not at the cash-out screen");
   }
   run.pendingReward = null;
+  run.pendingRewardBreakdown = null;
   run.shop = null;
   if (run.blindIndex < 2) {
     run.blindIndex += 1;
@@ -358,7 +365,9 @@ function ensurePlaying(run: RunState): void {
 /** Win → shop (+reward, generate shop), then lose-on-exhaustion, then a softlock guard. */
 function checkTransition(run: RunState, rng: () => number): void {
   if (run.totalScore >= run.target) {
-    run.pendingReward = cashOutMoney(run.blindIndex, run.handsRemaining);
+    const breakdown = cashOutMoney(run.blindIndex, run.handsRemaining, run.money);
+    run.pendingRewardBreakdown = breakdown;
+    run.pendingReward = breakdown.blindBase + breakdown.handsBonus + breakdown.interest;
     run.money += run.pendingReward;
     run.status = "shop";
     run.shop = generateShop(run, rng);
