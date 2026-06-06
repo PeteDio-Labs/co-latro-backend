@@ -35,6 +35,7 @@ function runWith(over: Partial<RunState> & { hand: RunState["hand"] }): RunState
     lastPlay: null,
     status: "playing",
     pendingReward: null,
+    pendingRewardBreakdown: null,
     shop: null,
     createdAt: 0,
     updatedAt: 0,
@@ -88,10 +89,28 @@ describe("playHand transitions", () => {
     const result = playHand(run, ["KH", "KS"]);
     expect(result.breakdown.score).toBe(60);
     expect(run.status).toBe("shop");
-    expect(run.pendingReward).toBe(5); // small base 3 + 2 hands left
+    expect(run.pendingReward).toBe(5); // small base 3 + 2 hands left + 0 interest ($0 held)
+    expect(run.pendingRewardBreakdown).toEqual({ blindBase: 3, handsBonus: 2, interest: 0 });
     expect(run.money).toBe(5);
     expect(run.shop?.items.length).toBe(3);
     expect(run.shop?.rerollCost).toBe(5);
+  });
+
+  it("cash-out includes interest ($1 per $5 held, cap $5) and breakdown sums to pendingReward", () => {
+    const run = runWith({
+      hand: cards("KH KS 3D 7C 9S"),
+      target: 50,
+      blindIndex: 0,
+      handsRemaining: 3,
+      money: 25, // $25 held → max $5 interest
+    });
+    playHand(run, ["KH", "KS"]);
+    expect(run.status).toBe("shop");
+    const bd = run.pendingRewardBreakdown!;
+    expect(bd).toEqual({ blindBase: 3, handsBonus: 2, interest: 5 });
+    expect(run.pendingReward).toBe(bd.blindBase + bd.handsBonus + bd.interest);
+    expect(run.pendingReward).toBe(10);
+    expect(run.money).toBe(35); // 25 + 10
   });
 
   it("running out of hands below target → lost_run", () => {
