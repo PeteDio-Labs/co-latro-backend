@@ -36,6 +36,8 @@ function normalizeRun(state: RunState): RunState {
   s.jokerStates ??= {};
   s.discardsUsedThisBlind ??= 0;
   s.heldGoldRoundEnd ??= false;
+  // PET-71 The Fool tracker — older saves predate this field; default null = no copy on first use.
+  s.lastConsumableUsedDefId ??= null;
   // PET-70 pack flow — older saves predate the openingPack field.
   s.openingPack ??= null;
   // PET-75 card modifier overlay — older saves predate this.

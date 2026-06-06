@@ -111,6 +111,12 @@ export interface RunState {
   discardsUsedThisBlind: number;
   /** Marker for gold-enhancement payout at round end (PET-75 reads this). */
   heldGoldRoundEnd: boolean;
+  /**
+   * Server-only tracker for The Fool (PET-71): the defId of the last consumable used this run
+   * (excluding The Fool itself, so repeated Fool uses keep copying the same prior consumable).
+   * Never surfaced to the client via toRunDTO — internal mechanism.
+   */
+  lastConsumableUsedDefId: string | null;
 
   /**
    * Per-card modifier overlay persisted across shuffles.
@@ -298,6 +304,7 @@ export function startRun(difficulty: Difficulty, userId: string, deckId = "stand
     jokerStates: {},
     discardsUsedThisBlind: 0,
     heldGoldRoundEnd: false,
+    lastConsumableUsedDefId: null,
     deckEnhancements: {},
     openingPack: null,
     createdAt: now,
@@ -676,10 +683,20 @@ export function useConsumable(
   const ids = resolveConsumableSelection(def, selectedCardIds);
   const selectedCards = resolveCardsFromHand(run, ids);
 
+  // Capture pre-effect, so The Fool's handler sees the prior tracker (its own use doesn't shadow it).
+  const usedDefId = def.id;
+
   applyConsumableEffect(run, def.effect, selectedCards, ids, rng);
 
   // Consume the instance regardless of effect (noop / deferred still uses the slot).
   run.consumables.splice(idx, 1);
+
+  // Update The Fool's tracker AFTER the effect resolves and the slot is freed. Skip when the
+  // used consumable IS The Fool — that's how "use Fool twice in a row" keeps copying the same
+  // prior consumable (the tracker isn't overwritten by Fool itself).
+  if (usedDefId !== "the_fool") {
+    run.lastConsumableUsedDefId = usedDefId;
+  }
 }
 
 /**
@@ -850,6 +867,21 @@ function applyConsumableEffect(
         const pick = pool[Math.floor(rng() * pool.length)]!;
         run.consumables.push({ id: crypto.randomUUID(), defId: pick.id });
       }
+      return;
+    }
+    case "copy_last_consumable": {
+      // The Fool: spawn a fresh instance of the last Tarot/Planet consumable used this run.
+      // First consumable of the run → tracker is null → silent no-op (slot still freed by caller).
+      const lastId = run.lastConsumableUsedDefId;
+      if (lastId === null) return;
+      const prior = CONSUMABLE_BY_ID.get(lastId);
+      if (!prior) return; // unknown defId (shouldn't happen) — no-op
+      // Balatro: The Fool only copies Tarot or Planet. Spectrals aren't copied.
+      if (prior.kind !== "tarot" && prior.kind !== "planet") return;
+      // Capacity-bound: skip the spawn if slots are full (Fool itself was just removed by the
+      // caller, so cap === current.length means there's no room for the copy).
+      if (run.consumables.length >= effectiveMaxConsumables(run)) return;
+      run.consumables.push({ id: crypto.randomUUID(), defId: prior.id });
       return;
     }
     case "double_money": {

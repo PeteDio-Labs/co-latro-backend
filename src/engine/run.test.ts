@@ -46,6 +46,7 @@ function runWith(over: Partial<RunState> & { hand: RunState["hand"] }): RunState
     jokerStates: {},
     discardsUsedThisBlind: 0,
     heldGoldRoundEnd: false,
+    lastConsumableUsedDefId: null,
     openingPack: null,
     deckEnhancements: {},
     createdAt: 0,

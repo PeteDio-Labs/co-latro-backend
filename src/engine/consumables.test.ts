@@ -38,6 +38,7 @@ function makeRun(over: Partial<RunState> & { hand: Card[] }): RunState {
     jokerStates: {},
     discardsUsedThisBlind: 0,
     heldGoldRoundEnd: false,
+    lastConsumableUsedDefId: null,
     deckEnhancements: {},
     openingPack: null,
     createdAt: 0,
@@ -195,13 +196,82 @@ describe("sellConsumable", () => {
   });
 });
 
-describe("useConsumable — noop / deferred", () => {
-  it("The Fool is consumed but does nothing else", () => {
+describe("useConsumable — The Fool (copy_last_consumable)", () => {
+  it("first consumable of the run: no-op (tracker null), consumable still consumed", () => {
     const run = makeRun({ hand: cards("2C"), money: 10 });
+    expect(run.lastConsumableUsedDefId).toBe(null);
     const id = giveTarot(run, "the_fool");
     useConsumable(run, id);
-    expect(run.money).toBe(10);
+    // Slot freed, nothing spawned, tracker still null (Fool doesn't track itself).
     expect(run.consumables).toEqual([]);
+    expect(run.lastConsumableUsedDefId).toBe(null);
+    expect(run.money).toBe(10);
+  });
+
+  it("after using a Tarot (Hermit), tracker is set and Fool spawns a copy of that tarot", () => {
+    const run = makeRun({ hand: cards("2C"), money: 0, maxConsumables: 3 });
+    const hermitId = giveTarot(run, "the_hermit", "inst-hermit");
+    useConsumable(run, hermitId);
+    // Hermit fired: money doubled (0+0 capped at 0 — but tracker is what matters).
+    expect(run.lastConsumableUsedDefId).toBe("the_hermit");
+    // Now drop in a Fool and use it.
+    const foolId = giveTarot(run, "the_fool", "inst-fool");
+    useConsumable(run, foolId);
+    // Fool consumed, one Hermit copy spawned in slots.
+    expect(run.consumables.length).toBe(1);
+    expect(run.consumables[0]!.defId).toBe("the_hermit");
+    // Tracker unchanged — Fool itself doesn't overwrite.
+    expect(run.lastConsumableUsedDefId).toBe("the_hermit");
+  });
+
+  it("after using a Spectral (Sigil), Fool spawns no copy (spectral filter)", () => {
+    const run = makeRun({ hand: cards("2C 3D 4H"), maxConsumables: 3 });
+    const sigilId = giveTarot(run, "sigil", "inst-sigil");
+    useConsumable(run, sigilId, undefined, () => 0);
+    expect(run.lastConsumableUsedDefId).toBe("sigil");
+    // Drop in a Fool — it should not spawn a copy because Sigil is spectral.
+    const foolId = giveTarot(run, "the_fool", "inst-fool");
+    useConsumable(run, foolId);
+    // Fool consumed, no copy added.
+    expect(run.consumables).toEqual([]);
+    // Tracker still points at the spectral (Fool doesn't overwrite).
+    expect(run.lastConsumableUsedDefId).toBe("sigil");
+  });
+
+  it("two Fools in a row after Hermit both spawn Hermit copies (Fool doesn't track itself)", () => {
+    const run = makeRun({ hand: cards("2C"), maxConsumables: 4 });
+    const hermitId = giveTarot(run, "the_hermit", "inst-hermit");
+    useConsumable(run, hermitId);
+    expect(run.lastConsumableUsedDefId).toBe("the_hermit");
+    // Now give 2 Fools and use them sequentially.
+    const fool1 = giveTarot(run, "the_fool", "inst-fool-1");
+    const fool2 = giveTarot(run, "the_fool", "inst-fool-2");
+    useConsumable(run, fool1);
+    useConsumable(run, fool2);
+    // Both Fools consumed, both spawned Hermits → 2 Hermit instances.
+    const hermits = run.consumables.filter((c) => c.defId === "the_hermit");
+    expect(hermits.length).toBe(2);
+    expect(run.consumables.find((c) => c.defId === "the_fool")).toBeUndefined();
+    // Tracker still hermit (Fools didn't overwrite it).
+    expect(run.lastConsumableUsedDefId).toBe("the_hermit");
+  });
+
+  it("slots full: Fool's spawn is skipped, but Fool is still consumed", () => {
+    // maxConsumables=2, prefill: use Hermit to set tracker, then load [Fool, Hermit] (full).
+    const run = makeRun({ hand: cards("2C"), maxConsumables: 2 });
+    const hermitId = giveTarot(run, "the_hermit", "inst-hermit-seed");
+    useConsumable(run, hermitId);
+    expect(run.lastConsumableUsedDefId).toBe("the_hermit");
+    // Now fill slots: a Fool + a Hermit.
+    giveTarot(run, "the_fool", "inst-fool");
+    giveTarot(run, "the_hermit", "inst-hermit-kept");
+    expect(run.consumables.length).toBe(2);
+    // Use the Fool. With both slots occupied, the spawn is skipped.
+    useConsumable(run, "inst-fool");
+    // Fool consumed (slot freed), the other Hermit remains, NO new Hermit copy added.
+    expect(run.consumables.length).toBe(1);
+    expect(run.consumables[0]!.defId).toBe("the_hermit");
+    expect(run.consumables[0]!.id).toBe("inst-hermit-kept");
   });
 });
 
