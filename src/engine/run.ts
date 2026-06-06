@@ -37,7 +37,13 @@ import {
 } from "./ante.ts";
 import { getDeck } from "./decks.ts";
 import { generateShop, levelUpHand, openPack, type ShopState } from "./shop.ts";
-import { packIdForKind, type OpeningPack, type PackKind } from "./packs.ts";
+import {
+  PACK_BY_ID,
+  packIdForKind,
+  type OpeningPack,
+  type PackChoiceItem,
+  type PackKind,
+} from "./packs.ts";
 import { JOKERS, getJoker, isScalingEffect, sellValue } from "./jokers.ts";
 import { GameError } from "./errors.ts";
 import {
@@ -144,6 +150,10 @@ export interface ConsumableView {
   name: string;
   description: string;
   kind: "tarot" | "planet" | "spectral";
+  /** Card-selection requirement (min/max + source pool). Null = fire-immediately.
+   *  The FE gates its "pick N then Confirm" flow on this; without it, selection
+   *  consumables fire with an empty selection and the engine rejects them. */
+  needsSelection: { min: number; max: number; from: "hand" | "owned_jokers" } | null;
 }
 
 export interface VoucherView {
@@ -162,6 +172,25 @@ export interface BossEffectView {
   id: string;
   name: string;
   description: string;
+}
+
+/** One choice the pack picker renders. `id`/`name`/`description` come straight off the
+ *  internal PackChoiceItem; the FE supplies icon/badge fallbacks per family. */
+export interface PackOptionView {
+  id: string;
+  name: string;
+  description: string;
+}
+
+/** Client-safe view of an opening booster pack. Maps the internal `OpeningPack`
+ *  (contents/remainingPicks/packKind) onto the shape the picker UI consumes
+ *  (options/picksAllowed/family). `returnStatus`/`size` are server-only. */
+export interface OpeningPackDTO {
+  packId: string;
+  name: string;
+  family: PackKind; // identical union to the FE's PackFamily
+  picksAllowed: number;
+  options: PackOptionView[];
 }
 
 /** Client-safe view: everything the UI needs, minus the hidden deck/composition. */
@@ -199,7 +228,23 @@ export interface RunStateDTO {
   bossEffect: BossEffectView | null;
   skipsThisRun: number;
   /** Non-null while status === "pack_open" — the contents/picks the picker UI renders. */
-  openingPack: OpeningPack | null;
+  openingPack: OpeningPackDTO | null;
+}
+
+/** Map the internal OpeningPack onto the picker's wire shape (or null when no pack is open). */
+function toOpeningPackDTO(opening: OpeningPack | null): OpeningPackDTO | null {
+  if (!opening) return null;
+  return {
+    packId: opening.packId,
+    name: PACK_BY_ID.get(opening.packId)?.name ?? opening.packId,
+    family: opening.packKind,
+    picksAllowed: opening.remainingPicks,
+    options: opening.contents.map((c: PackChoiceItem) => ({
+      id: c.id,
+      name: c.name,
+      description: c.description,
+    })),
+  };
 }
 
 /** The single chokepoint that strips the hidden deck + composition before anything reaches the client. */
@@ -242,7 +287,16 @@ export function toRunDTO(run: RunState): RunStateDTO {
     consumables: run.consumables.flatMap((c) => {
       const def = CONSUMABLE_BY_ID.get(c.defId);
       if (!def) return []; // skip unknown defIds rather than crash the DTO
-      return [{ id: c.id, defId: def.id, name: def.name, description: def.description, kind: def.kind }];
+      return [
+        {
+          id: c.id,
+          defId: def.id,
+          name: def.name,
+          description: def.description,
+          kind: def.kind,
+          needsSelection: def.needsSelection ?? null,
+        },
+      ];
     }),
     maxConsumables: effectiveMaxConsumables(run),
     vouchers: run.vouchers.flatMap((id) => {
@@ -259,7 +313,7 @@ export function toRunDTO(run: RunState): RunStateDTO {
       return def ? { id: def.id, name: def.name, description: def.description } : null;
     })(),
     skipsThisRun: run.skipsThisRun,
-    openingPack: run.openingPack,
+    openingPack: toOpeningPackDTO(run.openingPack),
   };
 }
 
@@ -1043,16 +1097,16 @@ export function skipBlind(run: RunState, rng: () => number = Math.random): void 
     run.tags.push(tag.id);
   }
   run.skipsThisRun += 1;
-  // Fire any "immediate" tags now (newly-rolled or carried-over).
+  // Fire any "immediate" tags now (newly-rolled or carried-over), then any pack-granting tags
+  // (standard/charm/meteor/buffoon) — these open a free pack right from the blind-select screen.
   applyTags(run, "immediate", rng);
-  // Advance: small → big, big → next ante's small. (Boss isn't skippable — guarded above.)
+  applyTags(run, "on_pack_open", rng);
+  // Advance within the SAME ante: small → big → boss. The boss is never skippable (guarded above),
+  // so skipping the small and/or big still leaves this ante's boss to be played before advancing.
   if (run.blindIndex === 0) {
-    run.blindIndex = 1;
+    run.blindIndex = 1; // small → big
   } else if (run.blindIndex === 1) {
-    if (run.ante < MAX_ANTE) {
-      run.ante += 1;
-      run.blindIndex = 0;
-    }
+    run.blindIndex = 2; // big → boss (must be played)
   }
   run.target = blindTarget(run.ante, run.blindIndex, run.difficulty);
 }

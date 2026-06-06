@@ -31,11 +31,11 @@ const packItem = (packId: string): PackShopItem => {
     kind: "pack",
     packId,
     name: def.name,
+    description: `Choose ${def.choices} of ${def.contents}`,
     cost: def.cost,
-    size: def.size,
-    packKind: def.kind,
-    choices: def.choices,
-    contents: def.contents,
+    family: def.kind,
+    picksAllowed: def.choices,
+    optionsCount: def.contents,
   };
 };
 
