@@ -430,6 +430,25 @@ export function playHand(
     if (c.enhancement === "lucky" && scoredIds.has(c.id)) run.money += 1;
   }
 
+  // PET-75: gold-SEAL payout — +$3 per gold-sealed card that was in the scoring set.
+  // (Distinct from gold-ENHANCEMENT which pays at end-of-blind if held — see checkTransition.)
+  for (const c of selected) {
+    if (c.seal === "gold" && scoredIds.has(c.id)) run.money += 3;
+  }
+
+  // PET-75: glass-break — each scored glass card has a 1/4 chance to destroy itself from
+  // deckComposition. The card is also leaving the hand below (it was played), so the only
+  // additional bookkeeping is removing one matching face from deckComposition + dropping
+  // any persisted per-instance modifier. Independent roll per glass card.
+  for (const c of selected) {
+    if (c.enhancement === "glass" && scoredIds.has(c.id) && rng() < 0.25) {
+      const code = faceCode({ rank: c.rank, suit: c.suit });
+      const compIdx = run.deckComposition.indexOf(code);
+      if (compIdx >= 0) run.deckComposition.splice(compIdx, 1);
+      if (run.deckEnhancements) delete run.deckEnhancements[c.id];
+    }
+  }
+
   removeFromHand(run, ids);
   draw(run, selected.length);
 
@@ -472,6 +491,21 @@ export function discardCards(
 
   run.discardsRemaining -= 1;
   run.discardsUsedThisBlind += 1;
+
+  // PET-75: purple seal — each discarded purple-sealed card creates a random Tarot consumable
+  // (capacity-respecting; if the slots are full, skip silently). Roll happens before the cards
+  // leave the hand so the seal-bearing card is still inspectable.
+  const tarotPool = consumablesByKind("tarot");
+  if (tarotPool.length > 0) {
+    const cap = effectiveMaxConsumables(run);
+    for (const c of selected) {
+      if (c.seal !== "purple") continue;
+      if (run.consumables.length >= cap) break;
+      const pick = tarotPool[Math.floor(rng() * tarotPool.length)]!;
+      run.consumables.push({ id: crypto.randomUUID(), defId: pick.id });
+    }
+  }
+
   removeFromHand(run, ids);
   draw(run, selected.length);
   checkTransition(run, rng); // only the softlock guard is reachable here (no score change)
@@ -564,6 +598,15 @@ function checkTransition(run: RunState, rng: () => number): void {
       run.heldGoldRoundEnd = true;
     } else {
       run.heldGoldRoundEnd = false;
+    }
+    // PET-75: blue seal — each blue-sealed card held in hand at end of blind levels up the
+    // most-recently-scored hand type by 1 (simplification of Balatro's "create planet card").
+    // No-op if nothing was played this blind (lastPlay null), which can happen on softlock.
+    if (run.lastPlay) {
+      const handType = run.lastPlay.breakdown.handType;
+      for (const c of run.hand) {
+        if (c.seal === "blue") levelUpHand(run, handType);
+      }
     }
     const breakdown = cashOutMoney(
       run.blindIndex,

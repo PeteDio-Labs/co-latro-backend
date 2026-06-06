@@ -213,7 +213,7 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
           break;
         case "glass":
           modXMult *= 2;
-          // TODO PET-75: 1-in-4 glass-break at end of blind (currently no-op).
+          // Glass-break (1-in-4 destroy on play) is rolled in run.ts:playHand after scoring.
           break;
         case "steel":
           // Steel only scores when HELD in hand, not when played. No-op here.
@@ -261,8 +261,11 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
         modChips += chipValue(card.rank);
       }
     }
-    // TODO PET-75: blue (creates planet on end-of-round if held), gold ($3 at end-of-round
-    // if it scored), purple (creates tarot at end-of-round if discarded) — deferred.
+    // blue / gold / purple seals are end-of-blind / on-play / on-discard effects and do not
+    // affect the scoring fold — they're handled in run.ts:
+    //   - blue:   levelUpHand on the last-scored hand type, fires in checkTransition
+    //   - gold:   +$3 if scored, fires in playHand right after the scoring fold
+    //   - purple: spawn a random Tarot, fires in discardCards
   }
 
   // Steel cards HELD in hand (not played) — each multiplies the running mult by ×1.5.
