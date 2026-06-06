@@ -33,11 +33,11 @@ import {
 } from "./ante.ts";
 import { getDeck } from "./decks.ts";
 import { generateShop, type ShopState } from "./shop.ts";
-import { getJoker, sellValue } from "./jokers.ts";
+import { JOKERS, getJoker, sellValue } from "./jokers.ts";
 import { GameError } from "./errors.ts";
 import { CONSUMABLE_BY_ID, type ConsumableInstance } from "./consumables.ts";
 import { VOUCHER_BY_ID } from "./vouchers.ts";
-import { TAG_BY_ID, type TagTrigger } from "./tags.ts";
+import { TAGS, TAG_BY_ID, type TagTrigger } from "./tags.ts";
 import { BOSS_EFFECT_BY_ID, effectiveBossTargetMult, rollBossEffect } from "./boss.ts";
 import {
   effectiveExtraDiscards,
@@ -300,7 +300,7 @@ export function startBlind(run: RunState, rng: () => number = Math.random): void
   run.discardsUsedThisBlind = 0;
   run.status = "playing";
   if (run.currentBossEffect) applyBossEffect(run, "start");
-  applyTags(run, "on_next_blind_start");
+  applyTags(run, "on_next_blind_start", rng);
 }
 
 /** Sell a joker for half its cost. Allowed while playing or shopping. */
@@ -489,7 +489,7 @@ function checkTransition(run: RunState, rng: () => number): void {
     run.money += run.pendingReward;
     run.status = "shop";
     run.shop = generateShop(run, rng);
-    applyTags(run, "on_shop_enter");
+    applyTags(run, "on_shop_enter", rng);
   } else if (run.handsRemaining <= 0) {
     run.status = "lost_run";
   } else if (run.hand.length === 0 && run.deck.length === 0) {
@@ -499,17 +499,50 @@ function checkTransition(run: RunState, rng: () => number): void {
 
 // ---- extension hooks (skeletons; no-ops when catalogs are empty) -----------
 
-/** Iterate run.tags and fire those matching `trigger`. No-op when TAGS is empty / unknown ids. */
-function applyTags(run: RunState, _trigger: TagTrigger): void {
+/** Iterate run.tags and fire those matching `trigger`. Tags fire once and are removed. */
+function applyTags(run: RunState, trigger: TagTrigger, rng: () => number = Math.random): void {
   if (run.tags.length === 0) return;
-  // Content stream PET-83 wires actual handlers here per TagEffect.kind.
-  // Resolved tags whose triggers don't match are skipped.
+  const remaining: string[] = [];
   for (const id of run.tags) {
     const def = TAG_BY_ID.get(id);
-    if (!def) continue;
-    if (def.trigger !== _trigger) continue;
-    // no-op handler skeleton: real effect handlers land with PET-83
+    if (!def) continue; // drop unknown ids
+    if (def.trigger !== trigger) {
+      remaining.push(id);
+      continue;
+    }
+    const effect = def.effect;
+    switch (effect.kind) {
+      case "money_add": {
+        run.money += effect.n;
+        break;
+      }
+      case "extra_joker_now": {
+        // Drop a random joker of the desired rarity into the run (capacity-respecting).
+        if (run.jokers.length >= effectiveMaxJokers(run)) {
+          remaining.push(id); // no room — keep the tag for later
+          continue;
+        }
+        const pool = JOKERS.filter((j) => j.rarity === effect.rarity);
+        if (pool.length === 0) break; // no joker for that rarity → consume tag silently
+        const pick = pool[Math.floor(rng() * pool.length)]!;
+        run.jokers.push(pick.id);
+        break;
+      }
+      case "mult_add_next_hand":
+      case "free_voucher":
+      case "free_pack": {
+        // Deferred effects — packs/vouchers/transient bonuses land with PET-70 / later voucher pass.
+        // Consume the tag rather than block — these were already "rolled" off the skip.
+        break;
+      }
+      default: {
+        const _exhaustive: never = effect;
+        void _exhaustive;
+        break;
+      }
+    }
   }
+  run.tags = remaining;
 }
 
 /** Apply the active boss effect for a given phase. No-op when no boss effect set. */
@@ -559,8 +592,8 @@ export function sellConsumable(run: RunState, instanceId: unknown): void {
   run.consumables.splice(idx, 1);
 }
 
-/** Skip the upcoming blind, awarding a tag (when TAGS is populated). No-op-friendly. */
-export function skipBlind(run: RunState, _rng: () => number = Math.random): void {
+/** Skip the upcoming blind: roll a tag, fire immediate-triggered effects, advance the ladder. */
+export function skipBlind(run: RunState, rng: () => number = Math.random): void {
   if (run.status !== "selecting_blind") {
     throw new GameError(409, "bad_state", "Can only skip from the blind-select screen");
   }
@@ -568,13 +601,24 @@ export function skipBlind(run: RunState, _rng: () => number = Math.random): void
   if (blindKind(run.blindIndex) === "boss") {
     throw new GameError(400, "cannot_skip_boss", "The boss blind cannot be skipped");
   }
-  run.skipsThisRun += 1;
-  applyTags(run, "on_blind_skip");
-  // Advance to the next blind (content stream PET-83 awards the skip-tag reward).
-  if (run.blindIndex < 2) {
-    run.blindIndex += 1;
-    run.target = blindTarget(run.ante, run.blindIndex, run.difficulty);
+  // Roll one tag uniformly from the catalog (defensive against an empty catalog).
+  if (TAGS.length > 0) {
+    const tag = TAGS[Math.floor(rng() * TAGS.length)]!;
+    run.tags.push(tag.id);
   }
+  run.skipsThisRun += 1;
+  // Fire any "immediate" tags now (newly-rolled or carried-over).
+  applyTags(run, "immediate", rng);
+  // Advance: small → big, big → next ante's small. (Boss isn't skippable — guarded above.)
+  if (run.blindIndex === 0) {
+    run.blindIndex = 1;
+  } else if (run.blindIndex === 1) {
+    if (run.ante < MAX_ANTE) {
+      run.ante += 1;
+      run.blindIndex = 0;
+    }
+  }
+  run.target = blindTarget(run.ante, run.blindIndex, run.difficulty);
 }
 
 function draw(run: RunState, count: number): void {
