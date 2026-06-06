@@ -38,7 +38,7 @@ import { GameError } from "./errors.ts";
 import { CONSUMABLE_BY_ID, type ConsumableInstance } from "./consumables.ts";
 import { VOUCHER_BY_ID } from "./vouchers.ts";
 import { TAG_BY_ID, type TagTrigger } from "./tags.ts";
-import { BOSS_EFFECT_BY_ID, rollBossEffect } from "./boss.ts";
+import { BOSS_EFFECT_BY_ID, effectiveBossTargetMult, rollBossEffect } from "./boss.ts";
 import {
   effectiveExtraDiscards,
   effectiveExtraHands,
@@ -283,17 +283,21 @@ export function startBlind(run: RunState, rng: () => number = Math.random): void
   const deck = shuffle(instantiateDeck(faces), rng);
   run.hand = deck.splice(0, HAND_SIZE);
   run.deck = deck;
-  run.target = blindTarget(run.ante, run.blindIndex, run.difficulty);
+  // Roll the boss effect first so its modifiers fold into target / handsRemaining below.
+  run.currentBossEffect = blindKind(run.blindIndex) === "boss" ? rollBossEffect(run.ante, rng) : null;
+  const baseTarget = blindTarget(run.ante, run.blindIndex, run.difficulty);
+  run.target = Math.round(baseTarget * effectiveBossTargetMult(run.currentBossEffect));
   run.totalScore = 0;
   const tuning = DIFFICULTY_TUNING[run.difficulty];
   const perk = getDeck(run.deckId).perk;
   run.handsRemaining = tuning.hands + (perk.extraHands ?? 0) + effectiveExtraHands(run);
   run.discardsRemaining = tuning.discards + (perk.extraDiscards ?? 0) + effectiveExtraDiscards(run);
+  // The Needle: only 1 hand allowed this blind (applied after standard assignment).
+  if (run.currentBossEffect === "the_needle") run.handsRemaining = 1;
   run.lastPlay = null;
   run.pendingReward = null;
   run.pendingRewardBreakdown = null;
   run.discardsUsedThisBlind = 0;
-  run.currentBossEffect = blindKind(run.blindIndex) === "boss" ? rollBossEffect(run.ante, rng) : null;
   run.status = "playing";
   if (run.currentBossEffect) applyBossEffect(run, "start");
   applyTags(run, "on_next_blind_start");
@@ -366,10 +370,23 @@ export function playHand(
   removeFromHand(run, ids);
   draw(run, selected.length);
 
+  // The Hook: at the end of each played hand, discard 2 random cards and redraw.
+  if (run.currentBossEffect === "the_hook") applyHookDiscard(run, rng);
+
   const result: PlayResult = { playedCardIds: ids, breakdown };
   run.lastPlay = result;
   checkTransition(run, rng);
   return result;
+}
+
+/** The Hook: remove up to 2 random cards from hand and draw replacements (capped by deck). */
+function applyHookDiscard(run: RunState, rng: () => number): void {
+  const toRemove = Math.min(2, run.hand.length);
+  for (let i = 0; i < toRemove; i++) {
+    const idx = Math.floor(rng() * run.hand.length);
+    run.hand.splice(idx, 1);
+  }
+  draw(run, toRemove);
 }
 
 export function discardCards(
