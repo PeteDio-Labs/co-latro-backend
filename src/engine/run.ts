@@ -10,6 +10,9 @@ import {
   parseFace,
   shuffle,
   type Card,
+  type CardEdition,
+  type CardEnhancement,
+  type CardSeal,
   type Face,
   type Rank,
   type Suit,
@@ -19,6 +22,7 @@ import {
   defaultHandLevels,
   scoreHand,
   type HandLevels,
+  type HandType,
   type ScoreBreakdown,
   type ScoreContext,
 } from "../scoring.ts";
@@ -32,10 +36,16 @@ import {
   type CashOutBreakdown,
 } from "./ante.ts";
 import { getDeck } from "./decks.ts";
-import { generateShop, type ShopState } from "./shop.ts";
+import { generateShop, levelUpHand, type ShopState } from "./shop.ts";
 import { getJoker, sellValue } from "./jokers.ts";
 import { GameError } from "./errors.ts";
-import { CONSUMABLE_BY_ID, type ConsumableInstance } from "./consumables.ts";
+import {
+  CONSUMABLE_BY_ID,
+  consumablesByKind,
+  type ConsumableDef,
+  type ConsumableEffect,
+  type ConsumableInstance,
+} from "./consumables.ts";
 import { VOUCHER_BY_ID } from "./vouchers.ts";
 import { TAG_BY_ID, type TagTrigger } from "./tags.ts";
 import { BOSS_EFFECT_BY_ID, rollBossEffect } from "./boss.ts";
@@ -97,6 +107,16 @@ export interface RunState {
   discardsUsedThisBlind: number;
   /** Marker for gold-enhancement payout at round end (PET-75 reads this). */
   heldGoldRoundEnd: boolean;
+
+  /**
+   * Per-card modifiers persisted across blinds (so a Tarot-enhanced King survives the next shuffle).
+   * Keyed by card.id (`${faceCode}-${n}`). Optional so legacy persisted runs deserialize cleanly;
+   * PET-75 expands this with per-card consumed-flags / triggered-seal bookkeeping.
+   */
+  deckEnhancements?: Record<
+    string,
+    { enhancement?: CardEnhancement; edition?: CardEdition; seal?: CardSeal }
+  >;
 
   createdAt: number;
   updatedAt: number;
@@ -269,6 +289,7 @@ export function startRun(difficulty: Difficulty, userId: string, deckId = "stand
     jokerStates: {},
     discardsUsedThisBlind: 0,
     heldGoldRoundEnd: false,
+    deckEnhancements: {},
     createdAt: now,
     updatedAt: now,
   };
@@ -503,11 +524,12 @@ function applyBossEffect(run: RunState, _phase: "start" | "play" | "end"): void 
   // Content stream PET-78 wires phase-specific behavior off `def` here.
 }
 
-/** Use a consumable from a run slot. No-op skeleton until PET-71/72 populate CONSUMABLES. */
+/** Use a consumable from a run slot. PET-71 tarot effects; PET-72 spectral extends the switch. */
 export function useConsumable(
   run: RunState,
   instanceId: unknown,
-  _selectedCardIds?: unknown,
+  selectedCardIds?: unknown,
+  rng: () => number = Math.random,
 ): void {
   if (run.status !== "playing" && run.status !== "shop") {
     throw new GameError(409, "bad_state", "Can only use consumables while playing or shopping");
@@ -520,9 +542,208 @@ export function useConsumable(
   const inst = run.consumables[idx]!;
   const def = CONSUMABLE_BY_ID.get(inst.defId);
   if (!def) throw new GameError(400, "unimplemented", "Consumable effect not implemented");
-  // Content streams (PET-71 tarot / PET-72 spectral) interpret def.effect here, validate
-  // _selectedCardIds against def.needsSelection, then mutate run accordingly.
-  throw new GameError(400, "unimplemented", "Consumable effect not implemented");
+
+  // Resolve selection up front so each effect arm gets validated card refs (or an empty array
+  // for selection-less effects). Effects that need 2 ordered selections — e.g. Death's copy_card —
+  // read selectedCardIds directly so input order is preserved (resolveCardsFromHand keeps order).
+  const ids = resolveConsumableSelection(def, selectedCardIds);
+  const selectedCards = resolveCardsFromHand(run, ids);
+
+  applyConsumableEffect(run, def.effect, selectedCards, ids, rng);
+
+  // Consume the instance regardless of effect (noop / deferred still uses the slot).
+  run.consumables.splice(idx, 1);
+}
+
+/**
+ * Validate that the selection matches def.needsSelection (count + uniqueness + string ids).
+ * Source-of-cards validation (hand vs jokers) is delegated to the per-source resolver below.
+ */
+function resolveConsumableSelection(
+  def: ConsumableDef,
+  selectedCardIds: unknown,
+): string[] {
+  if (!def.needsSelection) {
+    if (selectedCardIds !== undefined) {
+      // Tolerate an empty array passed by clients that always send the field.
+      if (Array.isArray(selectedCardIds) && selectedCardIds.length === 0) return [];
+      if (Array.isArray(selectedCardIds))
+        throw new GameError(
+          400,
+          "invalid_selection",
+          "This consumable does not take a card selection",
+        );
+    }
+    return [];
+  }
+  const { min, max } = def.needsSelection;
+  if (!Array.isArray(selectedCardIds)) {
+    throw new GameError(400, "invalid_selection", "selectedCardIds must be an array");
+  }
+  if (selectedCardIds.length < min || selectedCardIds.length > max) {
+    throw new GameError(
+      400,
+      "invalid_selection",
+      `Select between ${min} and ${max} card${max === 1 ? "" : "s"}`,
+    );
+  }
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of selectedCardIds) {
+    if (typeof raw !== "string") {
+      throw new GameError(400, "invalid_selection", "card ids must be strings");
+    }
+    if (seen.has(raw)) {
+      throw new GameError(400, "invalid_selection", "duplicate card ids in selection");
+    }
+    seen.add(raw);
+    out.push(raw);
+  }
+  return out;
+}
+
+/** Look up each id in the current hand, preserving input order. Throws on missing ids. */
+function resolveCardsFromHand(run: RunState, ids: string[]): Card[] {
+  if (ids.length === 0) return [];
+  const byId = new Map(run.hand.map((c) => [c.id, c]));
+  return ids.map((id) => {
+    const card = byId.get(id);
+    if (!card) {
+      throw new GameError(400, "invalid_selection", `card ${id} is not in hand`);
+    }
+    return card;
+  });
+}
+
+function recordDeckMod(
+  run: RunState,
+  cardId: string,
+  patch: { enhancement?: CardEnhancement; edition?: CardEdition; seal?: CardSeal },
+): void {
+  if (!run.deckEnhancements) run.deckEnhancements = {};
+  run.deckEnhancements[cardId] = { ...(run.deckEnhancements[cardId] ?? {}), ...patch };
+}
+
+/** All standard poker HandTypes that a level-random-hand tarot can pick from. */
+const LEVELABLE_HANDS: HandType[] = [
+  "high_card",
+  "pair",
+  "two_pair",
+  "three_of_a_kind",
+  "straight",
+  "flush",
+  "full_house",
+  "four_of_a_kind",
+  "straight_flush",
+];
+
+function applyConsumableEffect(
+  run: RunState,
+  effect: ConsumableEffect,
+  selectedCards: Card[],
+  selectedIds: string[],
+  rng: () => number,
+): void {
+  switch (effect.kind) {
+    case "noop":
+      return;
+    case "enhance_selected": {
+      for (const card of selectedCards) {
+        card.enhancement = effect.enhancement;
+        recordDeckMod(run, card.id, { enhancement: effect.enhancement });
+      }
+      return;
+    }
+    case "edition_selected": {
+      for (const card of selectedCards) {
+        card.edition = effect.edition;
+        recordDeckMod(run, card.id, { edition: effect.edition });
+      }
+      return;
+    }
+    case "seal_selected": {
+      for (const card of selectedCards) {
+        card.seal = effect.seal;
+        recordDeckMod(run, card.id, { seal: effect.seal });
+      }
+      return;
+    }
+    case "destroy_selected": {
+      // Remove from hand AND from deckComposition (one face-code occurrence per destroyed card).
+      const toRemove = new Set(selectedIds);
+      run.hand = run.hand.filter((c) => !toRemove.has(c.id));
+      for (const card of selectedCards) {
+        const code = faceCode({ rank: card.rank, suit: card.suit });
+        const compIdx = run.deckComposition.indexOf(code);
+        if (compIdx >= 0) run.deckComposition.splice(compIdx, 1);
+        // Drop any persisted modifier for the destroyed instance — it's gone.
+        if (run.deckEnhancements) delete run.deckEnhancements[card.id];
+      }
+      return;
+    }
+    case "increase_rank_selected": {
+      for (const card of selectedCards) {
+        if (card.rank >= 13) continue; // cap at King — Aces and Kings are no-op
+        const oldCode = faceCode({ rank: card.rank, suit: card.suit });
+        card.rank = (card.rank + 1) as Rank;
+        const newCode = faceCode({ rank: card.rank, suit: card.suit });
+        // Mirror the rank bump into deckComposition so the next shuffle reflects it.
+        const compIdx = run.deckComposition.indexOf(oldCode);
+        if (compIdx >= 0) run.deckComposition[compIdx] = newCode;
+      }
+      return;
+    }
+    case "copy_card": {
+      // Death: first selected card becomes a copy of the second (rank+suit), keeping its own id
+      // and any modifiers on the *source* card carry over so the copy is visually identical.
+      if (selectedCards.length !== 2) {
+        throw new GameError(400, "invalid_selection", "Copy requires exactly 2 selected cards");
+      }
+      const [dst, src] = selectedCards as [Card, Card];
+      const oldCode = faceCode({ rank: dst.rank, suit: dst.suit });
+      dst.rank = src.rank;
+      dst.suit = src.suit;
+      if (src.enhancement) dst.enhancement = src.enhancement;
+      else delete dst.enhancement;
+      if (src.edition) dst.edition = src.edition;
+      else delete dst.edition;
+      if (src.seal) dst.seal = src.seal;
+      else delete dst.seal;
+      const newCode = faceCode({ rank: dst.rank, suit: dst.suit });
+      const compIdx = run.deckComposition.indexOf(oldCode);
+      if (compIdx >= 0) run.deckComposition[compIdx] = newCode;
+      return;
+    }
+    case "create_consumable": {
+      const pool = consumablesByKind(effect.kind2);
+      if (pool.length === 0) return; // empty catalog → silently no-op (e.g. spectral not shipped yet)
+      const cap = effectiveMaxConsumables(run);
+      for (let i = 0; i < effect.count; i++) {
+        if (run.consumables.length >= cap) return;
+        const pick = pool[Math.floor(rng() * pool.length)]!;
+        run.consumables.push({ id: crypto.randomUUID(), defId: pick.id });
+      }
+      return;
+    }
+    case "double_money": {
+      const gain = Math.min(run.money, effect.cap);
+      run.money += gain;
+      return;
+    }
+    case "sell_jokers_value": {
+      let total = 0;
+      for (const jid of run.jokers) total += sellValue(getJoker(jid).cost);
+      run.money += Math.min(total, effect.cap);
+      return;
+    }
+    case "level_random_hand": {
+      for (let i = 0; i < effect.n; i++) {
+        const pick = LEVELABLE_HANDS[Math.floor(rng() * LEVELABLE_HANDS.length)]!;
+        levelUpHand(run, pick);
+      }
+      return;
+    }
+  }
 }
 
 /** Sell a consumable for half its catalog cost. Mirrors sellJoker. */
