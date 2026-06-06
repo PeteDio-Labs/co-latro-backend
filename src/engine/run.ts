@@ -33,7 +33,7 @@ import {
 } from "./ante.ts";
 import { getDeck } from "./decks.ts";
 import { generateShop, type ShopState } from "./shop.ts";
-import { getJoker, sellValue } from "./jokers.ts";
+import { getJoker, isScalingEffect, sellValue } from "./jokers.ts";
 import { GameError } from "./errors.ts";
 import { CONSUMABLE_BY_ID, type ConsumableInstance } from "./consumables.ts";
 import { VOUCHER_BY_ID } from "./vouchers.ts";
@@ -311,6 +311,7 @@ export function sellJoker(run: RunState, jokerId: unknown): void {
   if (idx < 0) throw new GameError(404, "joker_not_found", "Joker not owned");
   run.money += sellValue(getJoker(jokerId).cost);
   run.jokers.splice(idx, 1);
+  delete run.jokerStates[jokerId];
 }
 
 /** Move a joker one slot left/right (order affects scoring). Edge moves are no-ops. */
@@ -339,6 +340,9 @@ function scoreCtx(run: RunState): ScoreContext {
     jokers: run.jokers,
     handsRemaining: run.handsRemaining,
     discardsRemaining: run.discardsRemaining,
+    discardsUsedThisBlind: run.discardsUsedThisBlind,
+    money: run.money,
+    jokerStates: run.jokerStates,
   };
 }
 
@@ -365,6 +369,13 @@ export function playHand(
   run.handsRemaining -= 1;
   removeFromHand(run, ids);
   draw(run, selected.length);
+
+  // Economy jokers pay out at end of each hand played (before the shop transition so the
+  // money shows on the shop screen).
+  for (const jid of run.jokers) {
+    const def = getJoker(jid);
+    if (def.effect.kind === "economy_per_hand_played") run.money += def.effect.dollars;
+  }
 
   const result: PlayResult = { playedCardIds: ids, breakdown };
   run.lastPlay = result;
@@ -395,6 +406,15 @@ export function discardCards(
 export function continueRun(run: RunState): void {
   if (run.status !== "shop") {
     throw new GameError(409, "bad_state", "Not at the cash-out screen");
+  }
+  // A blind was cleared (we got here from the cash-out screen) — bump scaling jokers.
+  for (const jid of run.jokers) {
+    const def = getJoker(jid);
+    if (isScalingEffect(def.effect)) {
+      const state = run.jokerStates[jid] ?? { counter: 0 };
+      state.counter += 1;
+      run.jokerStates[jid] = state;
+    }
   }
   run.pendingReward = null;
   run.pendingRewardBreakdown = null;

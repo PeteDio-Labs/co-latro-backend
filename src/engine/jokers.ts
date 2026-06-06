@@ -24,7 +24,19 @@ export type JokerEffect =
   | { kind: "per_parity_chips"; parity: "even" | "odd"; chips: number }
   | { kind: "per_joker_mult"; mult: number } // × owned joker count
   | { kind: "per_remaining_discard_chips"; chips: number } // × discards remaining
-  | { kind: "x_mult_contains"; feature: HandFeature; xMult: number }; // multiply running mult
+  | { kind: "x_mult_contains"; feature: HandFeature; xMult: number } // multiply running mult
+  | { kind: "retrigger_face" } // face cards (J/Q/K) score chips twice (scoring-card pre-pass)
+  | { kind: "scaling_per_blind_mult"; mult: number } // +mult × counter (counter++ each blind cleared)
+  | { kind: "scaling_per_blind_chips"; chips: number } // +chips × counter (counter++ each blind cleared)
+  | { kind: "economy_per_hand_played"; dollars: number } // $N at end of each playHand
+  | { kind: "on_discard_chips"; chips: number } // +chips × discardsUsedThisBlind
+  | { kind: "flat_chips_and_mult"; chips: number; mult: number } // both at once
+  | { kind: "per_5_dollars_mult"; mult: number }; // +mult × floor(money / 5)
+
+/** Effect kinds whose state lives in run.jokerStates[id] = { counter }. */
+export function isScalingEffect(effect: JokerEffect): boolean {
+  return effect.kind === "scaling_per_blind_mult" || effect.kind === "scaling_per_blind_chips";
+}
 
 export interface JokerDef {
   id: string;
@@ -64,6 +76,27 @@ export const JOKERS: JokerDef[] = [
   { id: "abstract_joker", name: "Abstract Joker", description: "+3 Mult per Joker owned", cost: 4, rarity: "uncommon", effect: { kind: "per_joker_mult", mult: 3 } },
   { id: "banner", name: "Banner", description: "+30 Chips per remaining discard", cost: 5, rarity: "common", effect: { kind: "per_remaining_discard_chips", chips: 30 } },
   { id: "the_duo", name: "The Duo", description: "×2 Mult if hand has a Pair", cost: 8, rarity: "rare", effect: { kind: "x_mult_contains", feature: "pair", xMult: 2 } },
+  // ----- PET-74 expansion -----
+  { id: "green_joker", name: "Green Joker", description: "+1 Mult per blind cleared", cost: 4, rarity: "common", effect: { kind: "scaling_per_blind_mult", mult: 1 } },
+  { id: "ride_the_bus", name: "Ride the Bus", description: "+1 Mult per blind cleared", cost: 6, rarity: "common", effect: { kind: "scaling_per_blind_mult", mult: 1 } },
+  { id: "square_joker", name: "Square Joker", description: "+4 Chips per blind cleared", cost: 4, rarity: "common", effect: { kind: "scaling_per_blind_chips", chips: 4 } },
+  { id: "constellation", name: "Constellation", description: "+1 Mult per blind cleared", cost: 6, rarity: "uncommon", effect: { kind: "scaling_per_blind_mult", mult: 1 } },
+  { id: "madness", name: "Madness", description: "+0.5 Mult per blind cleared", cost: 7, rarity: "uncommon", effect: { kind: "scaling_per_blind_mult", mult: 0.5 } },
+  { id: "vagabond", name: "Vagabond", description: "Face cards score twice", cost: 8, rarity: "rare", effect: { kind: "retrigger_face" } },
+  { id: "hanging_chad", name: "Hanging Chad", description: "Face cards score twice", cost: 4, rarity: "common", effect: { kind: "retrigger_face" } },
+  { id: "frugal_joker", name: "Frugal Joker", description: "+50 Chips per discard used this blind", cost: 4, rarity: "common", effect: { kind: "on_discard_chips", chips: 50 } },
+  { id: "castle", name: "Castle", description: "+3 Chips per blind cleared", cost: 6, rarity: "uncommon", effect: { kind: "scaling_per_blind_chips", chips: 3 } },
+  { id: "cloud_9", name: "Cloud 9", description: "Earn $1 at end of each hand played", cost: 4, rarity: "common", effect: { kind: "economy_per_hand_played", dollars: 1 } },
+  { id: "rocket", name: "Rocket", description: "Earn $2 at end of each hand played", cost: 6, rarity: "uncommon", effect: { kind: "economy_per_hand_played", dollars: 2 } },
+  { id: "gift_card", name: "Gift Card", description: "Earn $1 at end of each hand played", cost: 4, rarity: "common", effect: { kind: "economy_per_hand_played", dollars: 1 } },
+  { id: "egg", name: "Egg", description: "Earn $1 at end of each hand played", cost: 4, rarity: "common", effect: { kind: "economy_per_hand_played", dollars: 1 } },
+  { id: "delayed_gratification", name: "Delayed Gratification", description: "Earn $2 at end of each hand played", cost: 4, rarity: "common", effect: { kind: "economy_per_hand_played", dollars: 2 } },
+  { id: "walkie_talkie", name: "Walkie Talkie", description: "+10 Chips and +4 Mult", cost: 4, rarity: "common", effect: { kind: "flat_chips_and_mult", chips: 10, mult: 4 } },
+  { id: "mr_bones", name: "Mr. Bones", description: "+5 Mult", cost: 5, rarity: "uncommon", effect: { kind: "flat_mult", mult: 5 } },
+  { id: "photograph", name: "Photograph", description: "+10 Mult if hand has a Flush", cost: 5, rarity: "common", effect: { kind: "contains_mult", feature: "flush", mult: 10 } },
+  { id: "bull", name: "Bull", description: "+2 Mult per $5 held", cost: 6, rarity: "uncommon", effect: { kind: "per_5_dollars_mult", mult: 2 } },
+  { id: "fortune_teller", name: "Fortune Teller", description: "+1 Mult per blind cleared", cost: 6, rarity: "uncommon", effect: { kind: "scaling_per_blind_mult", mult: 1 } },
+  { id: "stuntman", name: "Stuntman", description: "+250 Chips", cost: 7, rarity: "rare", effect: { kind: "flat_chips", chips: 250 } },
 ];
 
 const BY_ID = new Map(JOKERS.map((j) => [j.id, j]));
