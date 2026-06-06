@@ -44,6 +44,7 @@ function runWith(over: Partial<RunState> & { hand: RunState["hand"] }): RunState
     jokerStates: {},
     discardsUsedThisBlind: 0,
     heldGoldRoundEnd: false,
+    handSizeOffset: 0,
     openingPack: null,
     createdAt: 0,
     updatedAt: 0,

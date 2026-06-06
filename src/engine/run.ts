@@ -17,7 +17,7 @@ import {
   type Rank,
   type Suit,
 } from "../cards.ts";
-import { HAND_SIZE, MAX_SELECT, type Difficulty } from "../difficulty.ts";
+import { MAX_SELECT, type Difficulty } from "../difficulty.ts";
 import {
   defaultHandLevels,
   scoreHand,
@@ -53,6 +53,7 @@ import { BOSS_EFFECT_BY_ID, effectiveBossTargetMult, rollBossEffect } from "./bo
 import {
   effectiveExtraDiscards,
   effectiveExtraHands,
+  effectiveHandSize,
   effectiveInterestCap,
   effectiveMaxConsumables,
   effectiveMaxJokers,
@@ -111,6 +112,12 @@ export interface RunState {
   discardsUsedThisBlind: number;
   /** Marker for gold-enhancement payout at round end (PET-75 reads this). */
   heldGoldRoundEnd: boolean;
+  /**
+   * Permanent run-long hand-size delta from consumables (e.g. Ouija -1, future buffs +1).
+   * Voucher contributions live in vouchers + are folded by effectiveHandSize — they are
+   * NOT mirrored here. Floored at 1 effective hand size to keep blinds playable.
+   */
+  handSizeOffset: number;
 
   /**
    * Per-card modifier overlay persisted across shuffles.
@@ -298,6 +305,7 @@ export function startRun(difficulty: Difficulty, userId: string, deckId = "stand
     jokerStates: {},
     discardsUsedThisBlind: 0,
     heldGoldRoundEnd: false,
+    handSizeOffset: 0,
     deckEnhancements: {},
     openingPack: null,
     createdAt: now,
@@ -313,7 +321,7 @@ export function startBlind(run: RunState, rng: () => number = Math.random): void
   const faces: Face[] = run.deckComposition.map(parseFace);
   const decorated = decorateWithModifiers(instantiateDeck(faces), run.deckEnhancements);
   const deck = shuffle(decorated, rng);
-  run.hand = deck.splice(0, HAND_SIZE);
+  run.hand = deck.splice(0, effectiveHandSize(run));
   run.deck = deck;
   // Roll the boss effect first so its modifiers fold into target / handsRemaining below.
   run.currentBossEffect = blindKind(run.blindIndex) === "boss" ? rollBossEffect(run.ante, rng) : null;
@@ -431,7 +439,10 @@ export function playHand(
   }
 
   removeFromHand(run, ids);
-  draw(run, selected.length);
+  // Refill to the current effective hand size (NOT just selected.length) so consumables that
+  // shrink/grow the hand mid-blind (e.g. Ouija -1) propagate on the next draw. Cards already
+  // in hand stay — we never retroactively shrink the visible hand.
+  drawToHandSize(run);
 
   // Economy jokers pay out at end of each hand played (before the shop transition so the
   // money shows on the shop screen). Tolerate unknown ids (tests stuff synthetic joker ids).
@@ -455,7 +466,7 @@ function applyHookDiscard(run: RunState, rng: () => number): void {
     const idx = Math.floor(rng() * run.hand.length);
     run.hand.splice(idx, 1);
   }
-  draw(run, toRemove);
+  drawToHandSize(run);
 }
 
 export function discardCards(
@@ -473,7 +484,7 @@ export function discardCards(
   run.discardsRemaining -= 1;
   run.discardsUsedThisBlind += 1;
   removeFromHand(run, ids);
-  draw(run, selected.length);
+  drawToHandSize(run);
   checkTransition(run, rng); // only the softlock guard is reachable here (no score change)
 }
 
@@ -928,17 +939,22 @@ function applyConsumableEffect(
       return;
     }
     case "rank_convert_hand": {
-      if (run.hand.length === 0) return;
-      const ranks: Rank[] = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
-      const pick = ranks[Math.floor(rng() * ranks.length)]!;
-      for (const card of run.hand) {
-        const oldCode = faceCode({ rank: card.rank, suit: card.suit });
-        card.rank = pick;
-        const newCode = faceCode({ rank: card.rank, suit: card.suit });
-        const compIdx = run.deckComposition.indexOf(oldCode);
-        if (compIdx >= 0) run.deckComposition[compIdx] = newCode;
+      // Rank-convert the (possibly empty) hand first; the hand-size delta still applies even
+      // when the hand happens to be empty, so Ouija on an empty hand still shrinks the run.
+      if (run.hand.length > 0) {
+        const ranks: Rank[] = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
+        const pick = ranks[Math.floor(rng() * ranks.length)]!;
+        for (const card of run.hand) {
+          const oldCode = faceCode({ rank: card.rank, suit: card.suit });
+          card.rank = pick;
+          const newCode = faceCode({ rank: card.rank, suit: card.suit });
+          const compIdx = run.deckComposition.indexOf(oldCode);
+          if (compIdx >= 0) run.deckComposition[compIdx] = newCode;
+        }
       }
-      // TODO(PET-72): Ouija also subtracts 1 from hand size — deferred until HAND_SIZE is a per-run stat.
+      // Ouija's permanent downside (hand size -1). effectiveHandSize floors at 1, so a stacked
+      // negative offset can't deal 0 cards on the next blind.
+      if (effect.handSizeDelta) run.handSizeOffset += effect.handSizeDelta;
       return;
     }
     case "immolate": {
@@ -1062,6 +1078,17 @@ function draw(run: RunState, count: number): void {
   for (let i = 0; i < n; i++) {
     run.hand.push(run.deck.shift()!);
   }
+}
+
+/**
+ * Refill the hand up to the run's current effectiveHandSize, capped by what's left in the deck.
+ * If the hand is already at/above target (e.g. Cryptid just added clones), this is a no-op.
+ * Used by playHand, discardCards, and The Hook — anywhere we replenish after cards leave.
+ */
+function drawToHandSize(run: RunState): void {
+  const target = effectiveHandSize(run);
+  const need = target - run.hand.length;
+  if (need > 0) draw(run, need);
 }
 
 function removeFromHand(run: RunState, ids: string[]): void {
