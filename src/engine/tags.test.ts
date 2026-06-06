@@ -42,6 +42,7 @@ function runWith(over: Partial<RunState> & { hand: RunState["hand"] }): RunState
     skipsThisRun: 0,
     currentBossEffect: null,
     jokerStates: {},
+    jokerEditions: {},
     discardsUsedThisBlind: 0,
     heldGoldRoundEnd: false,
     openingPack: null,

@@ -87,6 +87,11 @@ export interface ScoreContext {
   money?: number;
   /** Per-joker counter state (drives scaling_per_blind_*). */
   jokerStates?: Record<string, { counter: number }>;
+  /**
+   * Per-joker edition overlay (PET-67). foil +50 chips, holo +10 mult, poly ×1.5 mult;
+   * negative is slot-only (no scoring effect, handled by effectiveMaxJokers).
+   */
+  jokerEditions?: Record<string, "foil" | "holo" | "poly" | "negative">;
   /** Cards still HELD in hand (not played) — steel enhancement reads this for x1.5 per steel held. */
   handHeld?: Card[];
 }
@@ -373,6 +378,43 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
             ...(dChips !== 0 ? { deltaChips: dChips } : {}),
             ...(dMult !== 0 ? { deltaMult: dMult } : {}),
           });
+        }
+      }
+      // Per-joker edition contribution applied AFTER the joker's own contribution, as a distinct
+      // animation step. negative is slot-only (no scoring effect), so it's not pushed here.
+      const edition = ctx?.jokerEditions?.[jid];
+      if (edition) {
+        const edBeforeChips = chips;
+        const edBeforeMult = mult;
+        switch (edition) {
+          case "foil":
+            chips += 50;
+            break;
+          case "holo":
+            mult += 10;
+            break;
+          case "poly":
+            mult *= 1.5;
+            break;
+          case "negative":
+            // Slot bonus only — no scoring effect.
+            break;
+        }
+        if (edition === "poly") {
+          if (mult !== edBeforeMult) {
+            jokerSteps.push({ jokerId: jid, name: `${def.name} [poly]`, xMult: 1.5 });
+          }
+        } else if (edition === "foil" || edition === "holo") {
+          const dChips = chips - edBeforeChips;
+          const dMult = mult - edBeforeMult;
+          if (dChips !== 0 || dMult !== 0) {
+            jokerSteps.push({
+              jokerId: jid,
+              name: `${def.name} [${edition}]`,
+              ...(dChips !== 0 ? { deltaChips: dChips } : {}),
+              ...(dMult !== 0 ? { deltaMult: dMult } : {}),
+            });
+          }
         }
       }
     }

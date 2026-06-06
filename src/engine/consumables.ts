@@ -58,6 +58,25 @@ export type ConsumableEffect =
   | { kind: "destroy_random_jokers"; n: number }
   /** Set the run's money to 0 (downside primitive — reused by Wraith if composed). */
   | { kind: "lose_all_money" }
+  // ----- joker-edition effects (PET-67) -----
+  /**
+   * Aura pattern: apply a random edition (from `pool`) to a random owned joker. Prefers
+   * jokers without an existing edition; falls back to any if all are editioned.
+   */
+  | { kind: "apply_joker_edition_random"; pool: ("foil" | "holo" | "poly")[] }
+  /** Ectoplasm pattern: apply Negative to a random owned joker (overwrites any edition). */
+  | { kind: "apply_joker_edition_negative" }
+  /**
+   * Hex pattern: apply Polychrome to one random owned joker and destroy every OTHER joker
+   * (their states/editions cleared). Optionally also zero the run's money (Wraith composes
+   * via lose_all_money — Hex itself does NOT zero money).
+   */
+  | { kind: "apply_joker_edition_polychrome_destroy_others"; lose_all_money: boolean }
+  /**
+   * Wheel of Fortune pattern: `chance` chance to apply a random edition (from `pool`) to a
+   * random owned joker; otherwise no-op. Consumable is consumed regardless.
+   */
+  | { kind: "wheel_of_fortune_chance"; pool: ("foil" | "holo" | "poly")[]; chance: number }
   | { kind: "noop" };
 
 export interface ConsumableDef {
@@ -164,10 +183,10 @@ export const CONSUMABLES: ConsumableDef[] = [
   {
     id: "the_wheel_of_fortune",
     name: "The Wheel of Fortune",
-    description: "1 in 4 chance to add Foil/Holo/Poly to a random Joker (DEFERRED)",
+    description: "1 in 4 chance to add Foil, Holographic, or Polychrome edition to a random Joker.",
     kind: "tarot",
     cost: 3,
-    effect: { kind: "noop" },
+    effect: { kind: "wheel_of_fortune_chance", pool: ["foil", "holo", "poly"], chance: 0.25 },
   },
   {
     id: "strength",
@@ -262,10 +281,10 @@ export const CONSUMABLES: ConsumableDef[] = [
   {
     id: "aura",
     name: "Aura",
-    description: "Adds Foil, Holographic, or Polychrome edition to a card in hand (DEFERRED)",
+    description: "Add Foil, Holographic, or Polychrome effect to a random Joker.",
     kind: "spectral",
     cost: 4,
-    effect: { kind: "noop" },
+    effect: { kind: "apply_joker_edition_random", pool: ["foil", "holo", "poly"] },
   },
   {
     id: "wraith",
@@ -294,10 +313,10 @@ export const CONSUMABLES: ConsumableDef[] = [
   {
     id: "ectoplasm",
     name: "Ectoplasm",
-    description: "Adds Negative to a random Joker, -1 hand size (DEFERRED)",
+    description: "Add Negative edition to a random Joker. (-1 hand size deferred.)",
     kind: "spectral",
     cost: 4,
-    effect: { kind: "noop" },
+    effect: { kind: "apply_joker_edition_negative" },
   },
   {
     id: "immolate",
@@ -327,10 +346,10 @@ export const CONSUMABLES: ConsumableDef[] = [
   {
     id: "hex",
     name: "Hex",
-    description: "Adds Polychrome to a random Joker, destroys all other Jokers (DEFERRED)",
+    description: "Add Polychrome edition to a random Joker; destroy all other Jokers.",
     kind: "spectral",
     cost: 4,
-    effect: { kind: "noop" },
+    effect: { kind: "apply_joker_edition_polychrome_destroy_others", lose_all_money: false },
   },
   {
     id: "trance",

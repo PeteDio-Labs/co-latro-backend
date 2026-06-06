@@ -108,6 +108,13 @@ export interface RunState {
   skipsThisRun: number;
   currentBossEffect: string | null;
   jokerStates: Record<string, { counter: number }>;
+  /**
+   * Per-joker edition overlay. Keyed by joker catalog id (the same string used in run.jokers[]).
+   * Editions affect scoring (foil +50 chips, holo +10 mult, poly ×1.5 mult) or slots
+   * (negative — adds an extra slot, no scoring effect). Optional so legacy persisted runs
+   * deserialize cleanly; backfilled to {} by sessions.ts.
+   */
+  jokerEditions: Record<string, "foil" | "holo" | "poly" | "negative">;
   discardsUsedThisBlind: number;
   /** Marker for gold-enhancement payout at round end (PET-75 reads this). */
   heldGoldRoundEnd: boolean;
@@ -135,6 +142,8 @@ export interface JokerView {
   description: string;
   cost: number;
   sellValue: number;
+  /** Per-joker edition (frontend renders via .card-foil/.card-holo/.card-poly classes). */
+  edition?: "foil" | "holo" | "poly" | "negative";
 }
 
 /** A consumable as the client sees it (resolved from CONSUMABLE_BY_ID). */
@@ -217,12 +226,14 @@ export function toRunDTO(run: RunState): RunStateDTO {
     handLevels: run.handLevels,
     jokers: run.jokers.map((id) => {
       const def = getJoker(id);
+      const edition = run.jokerEditions?.[id];
       return {
         id: def.id,
         name: def.name,
         description: def.description,
         cost: def.cost,
         sellValue: sellValue(def.cost),
+        ...(edition ? { edition } : {}),
       };
     }),
     maxJokers: effectiveMaxJokers(run),
@@ -296,6 +307,7 @@ export function startRun(difficulty: Difficulty, userId: string, deckId = "stand
     skipsThisRun: 0,
     currentBossEffect: null,
     jokerStates: {},
+    jokerEditions: {},
     discardsUsedThisBlind: 0,
     heldGoldRoundEnd: false,
     deckEnhancements: {},
@@ -348,6 +360,7 @@ export function sellJoker(run: RunState, jokerId: unknown): void {
   run.money += sellValue(getJoker(jokerId).cost);
   run.jokers.splice(idx, 1);
   delete run.jokerStates[jokerId];
+  delete run.jokerEditions[jokerId];
 }
 
 /** Move a joker one slot left/right (order affects scoring). Edge moves are no-ops. */
@@ -379,6 +392,7 @@ function scoreCtx(run: RunState): ScoreContext {
     discardsUsedThisBlind: run.discardsUsedThisBlind,
     money: run.money,
     jokerStates: run.jokerStates,
+    jokerEditions: run.jokerEditions,
     handHeld: run.hand,
   };
 }
@@ -882,7 +896,9 @@ function applyConsumableEffect(
       for (let i = 0; i < n; i++) {
         if (run.jokers.length === 0) return;
         const idx = Math.floor(rng() * run.jokers.length);
-        run.jokers.splice(idx, 1);
+        const [removed] = run.jokers.splice(idx, 1) as [string];
+        delete run.jokerStates[removed];
+        delete run.jokerEditions[removed];
       }
       return;
     }
@@ -962,7 +978,65 @@ function applyConsumableEffect(
       if (run.jokers.length === 0) return;
       const idx = Math.floor(rng() * run.jokers.length);
       const keep = run.jokers[idx]!;
+      // Clean states/editions for every other joker before collapsing the list.
+      for (const jid of run.jokers) {
+        if (jid === keep) continue;
+        delete run.jokerStates[jid];
+        delete run.jokerEditions[jid];
+      }
       run.jokers = [keep, keep];
+      return;
+    }
+    case "apply_joker_edition_random": {
+      // Aura pattern. Prefer un-editioned jokers; fall back to overwriting if all are editioned.
+      if (run.jokers.length === 0) return; // no jokers → no-op (slot still consumed)
+      const candidates = run.jokers.filter((jid) => !run.jokerEditions[jid]);
+      const pool = candidates.length > 0 ? candidates : run.jokers;
+      const jid = pool[Math.floor(rng() * pool.length)]!;
+      const edPool = effect.pool;
+      if (edPool.length === 0) return;
+      const ed = edPool[Math.floor(rng() * edPool.length)]!;
+      run.jokerEditions[jid] = ed;
+      return;
+    }
+    case "apply_joker_edition_negative": {
+      // Ectoplasm pattern. Overwrites any existing edition.
+      if (run.jokers.length === 0) return;
+      const jid = run.jokers[Math.floor(rng() * run.jokers.length)]!;
+      run.jokerEditions[jid] = "negative";
+      return;
+    }
+    case "apply_joker_edition_polychrome_destroy_others": {
+      // Hex pattern. Pick the keep joker first (so rng order is deterministic), then splice the rest.
+      if (run.jokers.length === 0) {
+        if (effect.lose_all_money) run.money = 0;
+        return;
+      }
+      const keepIdx = Math.floor(rng() * run.jokers.length);
+      const keep = run.jokers[keepIdx]!;
+      // Clean states/editions for every joker except `keep`.
+      for (const jid of run.jokers) {
+        if (jid === keep) continue;
+        delete run.jokerStates[jid];
+        delete run.jokerEditions[jid];
+      }
+      run.jokers = [keep];
+      run.jokerEditions[keep] = "poly";
+      if (effect.lose_all_money) run.money = 0;
+      return;
+    }
+    case "wheel_of_fortune_chance": {
+      // Wheel pattern. Consumable is consumed even on the miss branch.
+      const roll = rng();
+      if (roll >= effect.chance) return; // missed — no-op
+      if (run.jokers.length === 0) return;
+      const candidates = run.jokers.filter((jid) => !run.jokerEditions[jid]);
+      const pool = candidates.length > 0 ? candidates : run.jokers;
+      const jid = pool[Math.floor(rng() * pool.length)]!;
+      const edPool = effect.pool;
+      if (edPool.length === 0) return;
+      const ed = edPool[Math.floor(rng() * edPool.length)]!;
+      run.jokerEditions[jid] = ed;
       return;
     }
     case "cryptid_duplicate": {

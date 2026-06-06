@@ -130,6 +130,41 @@ describe("PET-74 expansion effects", () => {
   });
 });
 
+describe("PET-67 joker editions", () => {
+  // baseline pair: (10 + 10+10) × 2 = 60
+  it("foil adds +50 chips after the joker contribution", () => {
+    // Joker: (30) × (2+4) = 180 baseline. Foil adds +50 chips first → (30+50) × 6 = 480.
+    const r = scoreHand(cards("KH KS 3D 7C 9S"), ctx(["joker"], { jokerEditions: { joker: "foil" } }));
+    expect(r.score).toBe(480);
+    // Edition step is animated alongside the joker step.
+    expect(r.jokerSteps).toEqual([
+      { jokerId: "joker", name: "Joker", deltaMult: 4 },
+      { jokerId: "joker", name: "Joker [foil]", deltaChips: 50 },
+    ]);
+  });
+
+  it("holo adds +10 mult after the joker contribution", () => {
+    // Joker: +4 mult; +10 holo. (30) × (2+4+10) = 480.
+    expect(
+      scoreHand(cards("KH KS 3D 7C 9S"), ctx(["joker"], { jokerEditions: { joker: "holo" } })).score,
+    ).toBe(480);
+  });
+
+  it("poly multiplies the running mult by 1.5", () => {
+    // Joker: +4 mult, then ×1.5 → 9. 30 × 9 = 270.
+    expect(
+      scoreHand(cards("KH KS 3D 7C 9S"), ctx(["joker"], { jokerEditions: { joker: "poly" } })).score,
+    ).toBe(270);
+  });
+
+  it("negative is slot-only — no scoring effect on the joker fold", () => {
+    // Joker alone: (30) × (2+4) = 180.
+    expect(
+      scoreHand(cards("KH KS 3D 7C 9S"), ctx(["joker"], { jokerEditions: { joker: "negative" } })).score,
+    ).toBe(180);
+  });
+});
+
 describe("handFeatures (contains semantics)", () => {
   it("full house contains pair + two_pair + three_of_a_kind", () => {
     expect(handFeatures(cards("KH KS KD 7C 7S"))).toEqual({

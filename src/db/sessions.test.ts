@@ -70,6 +70,8 @@ describe("sessions repo", () => {
     expect(got.deckId).toBe("standard");
     expect(got.shop).toBeNull();
     expect(got.jokers).toEqual([]);
+    // PET-67 jokerEditions backfill — legacy runs without the field deserialize to {}.
+    expect(got.jokerEditions).toEqual({});
   });
 
   it("saveRun persists mutations", async () => {
