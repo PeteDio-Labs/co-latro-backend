@@ -10,6 +10,9 @@ import {
   parseFace,
   shuffle,
   type Card,
+  type CardEdition,
+  type CardEnhancement,
+  type CardSeal,
   type Face,
   type Rank,
   type Suit,
@@ -97,6 +100,13 @@ export interface RunState {
   discardsUsedThisBlind: number;
   /** Marker for gold-enhancement payout at round end (PET-75 reads this). */
   heldGoldRoundEnd: boolean;
+
+  /**
+   * Per-face-code modifier overlay applied at deal-time (PET-75). Empty by default;
+   * future tarot/voucher hooks (PET-71) mutate cards persistently by writing here.
+   * Keyed by the deck face code (e.g. "KH", "TS"); applied to every instance of that face.
+   */
+  deckEnhancements: Record<string, { enhancement?: CardEnhancement; edition?: CardEdition; seal?: CardSeal }>;
 
   createdAt: number;
   updatedAt: number;
@@ -269,6 +279,7 @@ export function startRun(difficulty: Difficulty, userId: string, deckId = "stand
     jokerStates: {},
     discardsUsedThisBlind: 0,
     heldGoldRoundEnd: false,
+    deckEnhancements: {},
     createdAt: now,
     updatedAt: now,
   };
@@ -280,7 +291,8 @@ export function startBlind(run: RunState, rng: () => number = Math.random): void
     throw new GameError(409, "bad_state", "Not selecting a blind");
   }
   const faces: Face[] = run.deckComposition.map(parseFace);
-  const deck = shuffle(instantiateDeck(faces), rng);
+  const decorated = decorateWithModifiers(instantiateDeck(faces), run.deckEnhancements);
+  const deck = shuffle(decorated, rng);
   run.hand = deck.splice(0, HAND_SIZE);
   run.deck = deck;
   run.target = blindTarget(run.ante, run.blindIndex, run.difficulty);
@@ -339,7 +351,26 @@ function scoreCtx(run: RunState): ScoreContext {
     jokers: run.jokers,
     handsRemaining: run.handsRemaining,
     discardsRemaining: run.discardsRemaining,
+    handHeld: run.hand,
   };
+}
+
+/**
+ * Apply per-face modifiers (enhancement/edition/seal) to freshly instantiated cards.
+ * For PET-75 the source map is empty by default; tarot/voucher hooks (PET-71/76) populate
+ * it so the same face code yields decorated cards on the next deal.
+ */
+function decorateWithModifiers(
+  deck: Card[],
+  modifiers: RunState["deckEnhancements"],
+): Card[] {
+  if (Object.keys(modifiers).length === 0) return deck;
+  return deck.map((card) => {
+    const code = faceCode({ rank: card.rank, suit: card.suit });
+    const mods = modifiers[code];
+    if (!mods) return card;
+    return { ...card, ...mods };
+  });
 }
 
 /** Non-mutating: validate the selection and return what it WOULD score (with this run's hand levels). */
@@ -363,6 +394,14 @@ export function playHand(
   const breakdown = scoreHand(selected, scoreCtx(run));
   run.totalScore += breakdown.score;
   run.handsRemaining -= 1;
+
+  // PET-75: lucky cards scored grant a deterministic +$1 EV (real Balatro is 1/15 × $20).
+  // Apply BEFORE removing them from hand so we count the actually-scored set.
+  const scoredIds = new Set(breakdown.scoringCardIds);
+  for (const c of selected) {
+    if (c.enhancement === "lucky" && scoredIds.has(c.id)) run.money += 1;
+  }
+
   removeFromHand(run, ids);
   draw(run, selected.length);
 
@@ -461,6 +500,15 @@ function ensurePlaying(run: RunState): void {
 function checkTransition(run: RunState, rng: () => number): void {
   if (run.totalScore >= run.target) {
     if (run.currentBossEffect) applyBossEffect(run, "end");
+    // PET-75: gold-enhancement payout — $3 per gold card still held in hand at round end.
+    let goldHeld = 0;
+    for (const c of run.hand) if (c.enhancement === "gold") goldHeld += 1;
+    if (goldHeld > 0) {
+      run.money += goldHeld * 3;
+      run.heldGoldRoundEnd = true;
+    } else {
+      run.heldGoldRoundEnd = false;
+    }
     const breakdown = cashOutMoney(
       run.blindIndex,
       run.handsRemaining,

@@ -36,6 +36,7 @@ function normalizeRun(state: RunState): RunState {
   s.jokerStates ??= {};
   s.discardsUsedThisBlind ??= 0;
   s.heldGoldRoundEnd ??= false;
+  s.deckEnhancements ??= {};
   // Persisted shop state may pre-date the voucher slot — default it to null.
   if (s.shop && typeof s.shop === "object") {
     const sh = s.shop as Record<string, unknown>;
