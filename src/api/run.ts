@@ -12,12 +12,14 @@ import {
   groupComposition,
   groupRemaining,
   moveJoker,
+  pickFromPack,
   playHand,
   previewSelection,
   rerollShop,
   sellConsumable,
   sellJoker,
   skipBlind,
+  skipPack,
   startBlind,
   startRun,
   toRunDTO,
@@ -147,6 +149,21 @@ export function createRunRouter(db: DB): Router {
   router.post("/skip", async (req, res) => {
     const run = await requireActive(db, req.userId!);
     skipBlind(run);
+    await saveRun(db, run);
+    res.json(toRunDTO(run));
+  });
+
+  // Booster packs: pick N-of-M offered items, or skip the rest.
+  router.post("/pack/pick", async (req, res) => {
+    const run = await requireActive(db, req.userId!);
+    pickFromPack(run, req.body?.itemIds);
+    await saveRun(db, run);
+    res.json(toRunDTO(run));
+  });
+
+  router.post("/pack/skip", async (req, res) => {
+    const run = await requireActive(db, req.userId!);
+    skipPack(run);
     await saveRun(db, run);
     res.json(toRunDTO(run));
   });

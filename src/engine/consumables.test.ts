@@ -39,6 +39,7 @@ function makeRun(over: Partial<RunState> & { hand: Card[] }): RunState {
     discardsUsedThisBlind: 0,
     heldGoldRoundEnd: false,
     deckEnhancements: {},
+    openingPack: null,
     createdAt: 0,
     updatedAt: 0,
     ...over,

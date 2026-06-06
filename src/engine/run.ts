@@ -36,7 +36,8 @@ import {
   type CashOutBreakdown,
 } from "./ante.ts";
 import { getDeck } from "./decks.ts";
-import { generateShop, levelUpHand, type ShopState } from "./shop.ts";
+import { generateShop, levelUpHand, openPack, type ShopState } from "./shop.ts";
+import { packIdForKind, type OpeningPack, type PackKind } from "./packs.ts";
 import { getJoker, sellValue } from "./jokers.ts";
 import { GameError } from "./errors.ts";
 import {
@@ -59,7 +60,7 @@ import {
 
 export { GameError } from "./errors.ts";
 
-export type RunStatus = "selecting_blind" | "playing" | "shop" | "won_run" | "lost_run";
+export type RunStatus = "selecting_blind" | "playing" | "shop" | "pack_open" | "won_run" | "lost_run";
 
 export interface PlayResult {
   playedCardIds: string[];
@@ -95,6 +96,9 @@ export interface RunState {
   pendingReward: number | null;
   pendingRewardBreakdown: CashOutBreakdown | null;
   shop: ShopState | null;
+
+  /** Transient booster-pack state — non-null when status === "pack_open". */
+  openingPack: OpeningPack | null;
 
   // ----- extension slots (PET-67 foundation; empty-default until content streams populate) -----
   consumables: ConsumableInstance[];
@@ -192,6 +196,8 @@ export interface RunStateDTO {
   tags: TagView[];
   bossEffect: BossEffectView | null;
   skipsThisRun: number;
+  /** Non-null while status === "pack_open" — the contents/picks the picker UI renders. */
+  openingPack: OpeningPack | null;
 }
 
 /** The single chokepoint that strips the hidden deck + composition before anything reaches the client. */
@@ -251,6 +257,7 @@ export function toRunDTO(run: RunState): RunStateDTO {
       return def ? { id: def.id, name: def.name, description: def.description } : null;
     })(),
     skipsThisRun: run.skipsThisRun,
+    openingPack: run.openingPack,
   };
 }
 
@@ -290,6 +297,7 @@ export function startRun(difficulty: Difficulty, userId: string, deckId = "stand
     discardsUsedThisBlind: 0,
     heldGoldRoundEnd: false,
     deckEnhancements: {},
+    openingPack: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -506,13 +514,29 @@ function checkTransition(run: RunState, rng: () => number): void {
 /** Iterate run.tags and fire those matching `trigger`. No-op when TAGS is empty / unknown ids. */
 function applyTags(run: RunState, _trigger: TagTrigger): void {
   if (run.tags.length === 0) return;
-  // Content stream PET-83 wires actual handlers here per TagEffect.kind.
+  // Content stream PET-83 wires the remaining effect handlers; PET-70 wires free_pack.
   // Resolved tags whose triggers don't match are skipped.
+  const consumed: string[] = [];
   for (const id of run.tags) {
     const def = TAG_BY_ID.get(id);
     if (!def) continue;
     if (def.trigger !== _trigger) continue;
-    // no-op handler skeleton: real effect handlers land with PET-83
+    // free_pack: open a free pack (cost 0). Only one pack can be open at a time —
+    // if another tag already opened a pack this frame, we leave the rest queued.
+    if (def.effect.kind === "free_pack") {
+      if (run.openingPack) continue;
+      const packKind = def.effect.packKind as PackKind;
+      const packId = packIdForKind(packKind);
+      // Pack returns to the same status it triggered from (shop or selecting_blind).
+      const ret = run.status === "selecting_blind" ? "selecting_blind" : "shop";
+      openPack(run, packId, ret);
+      consumed.push(id);
+    }
+  }
+  // Tags are one-shot: remove the ones that fired this frame.
+  if (consumed.length > 0) {
+    const used = new Set(consumed);
+    run.tags = run.tags.filter((id) => !used.has(id));
   }
 }
 
