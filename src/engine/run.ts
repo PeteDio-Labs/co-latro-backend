@@ -392,7 +392,7 @@ function decorateWithModifiers(
   deck: Card[],
   modifiers: RunState["deckEnhancements"],
 ): Card[] {
-  if (Object.keys(modifiers).length === 0) return deck;
+  if (!modifiers || Object.keys(modifiers).length === 0) return deck;
   return deck.map((card) => {
     const code = faceCode({ rank: card.rank, suit: card.suit });
     const mods = modifiers[code];

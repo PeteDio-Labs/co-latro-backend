@@ -55,6 +55,7 @@ function bossRunBase(over: Partial<RunState> = {}): RunState {
     jokerStates: {},
     discardsUsedThisBlind: 0,
     heldGoldRoundEnd: false,
+    openingPack: null,
     createdAt: 0,
     updatedAt: 0,
     ...over,
