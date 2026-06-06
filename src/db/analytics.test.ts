@@ -62,9 +62,15 @@ describe("analytics counters", () => {
     incRunWon(db);
     incRunLost(db);
     incHandPlayed(db);
-    // Drain pending microtasks/queries — give the fire-and-forget chains a tick to settle.
-    await new Promise((r) => setTimeout(r, 50));
-    const row = await todayRow();
+    // Poll up to ~2s for fire-and-forget chains to flush (CI Postgres connect time + UPSERT
+    // serialization can exceed a flat sleep on slow runners — see CI failure 2026-06-06).
+    const deadline = Date.now() + 2000;
+    let row;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 25));
+      row = await todayRow();
+      if (row && row.runsStarted === 1 && row.runsWon === 1 && row.runsLost === 1 && row.handsPlayed === 1) break;
+    }
     expect(row!.runsStarted).toBe(1);
     expect(row!.runsWon).toBe(1);
     expect(row!.runsLost).toBe(1);
