@@ -44,7 +44,8 @@ export const PLANETS: PlanetDef[] = [
 export const PLANET_COST = 3;
 export const SHOP_ITEM_COUNT = 3;
 export const REROLL_BASE_COST = 5;
-export const JOKER_WEIGHT = 0.45; // chance a shop slot rolls a joker vs a planet
+export const JOKER_WEIGHT = 0.45; // chance a shop slot rolls a joker vs other
+export const CONSUMABLE_WEIGHT = 0.2; // of the non-joker slot, chance to roll a consumable (vs planet)
 
 export interface PlanetShopItem {
   id: string; // "planet:saturn"
@@ -145,7 +146,7 @@ function makeVoucherItem(def: VoucherDef, discountPct: number): VoucherShopItem 
   };
 }
 
-/** Offer SHOP_ITEM_COUNT items, each rolled joker-or-planet; distinct, jokers exclude owned. */
+/** Offer SHOP_ITEM_COUNT items, each rolled joker-vs-planet-vs-consumable; distinct, jokers exclude owned. */
 export function generateShop(run: RunState, rng: () => number = Math.random): ShopState {
   const discountPct = effectiveShopDiscountPct(run);
   const planetPool = shuffle(PLANETS, rng);
@@ -154,15 +155,25 @@ export function generateShop(run: RunState, rng: () => number = Math.random): Sh
     JOKERS.filter((j) => !owned.has(j.id)),
     rng,
   );
+  const consumablePool = shuffle(CONSUMABLES, rng);
   const items: ShopItem[] = [];
   let pi = 0;
   let ji = 0;
+  let ci = 0;
   for (let slot = 0; slot < SHOP_ITEM_COUNT; slot++) {
     const rollJoker = rng() < JOKER_WEIGHT;
     if (rollJoker && ji < jokerPool.length) {
       items.push(makeJokerItem(jokerPool[ji++]!, discountPct));
+      continue;
+    }
+    // Non-joker slot: small chance to roll a consumable instead of a planet (only when catalog is populated).
+    const rollConsumable = consumablePool.length > 0 && rng() < CONSUMABLE_WEIGHT;
+    if (rollConsumable && ci < consumablePool.length) {
+      items.push(makeConsumableItem(consumablePool[ci++]!, discountPct));
     } else if (pi < planetPool.length) {
       items.push(makePlanetItem(planetPool[pi++]!, run.handLevels, discountPct));
+    } else if (ci < consumablePool.length) {
+      items.push(makeConsumableItem(consumablePool[ci++]!, discountPct));
     } else if (ji < jokerPool.length) {
       items.push(makeJokerItem(jokerPool[ji++]!, discountPct));
     }
