@@ -33,4 +33,22 @@ describe("scoreHand — authentic Balatro Level-1 totals", () => {
     const s = scoreHand(cards("AS"));
     expect(s.score).toBe(16); // (5 + 11) * 1
   });
+
+  it("five of a kind (5 nines) → 1140", () => {
+    const s = scoreHand(cards("9C 9D 9H 9S 9C2"));
+    expect(s.handType).toBe("five_of_a_kind");
+    expect(s.score).toBe(1140); // (50 + 9*5) * 12
+  });
+
+  it("flush house (KKK 77 all hearts) → 1176", () => {
+    const s = scoreHand(cards("KH KH2 KH3 7H 7H2"));
+    expect(s.handType).toBe("flush_house");
+    expect(s.score).toBe(1176); // (40 + 10+10+10+7+7) * 14
+  });
+
+  it("flush five (5 nines of clubs) → 3280", () => {
+    const s = scoreHand(cards("9C 9C2 9C3 9C4 9C5"));
+    expect(s.handType).toBe("flush_five");
+    expect(s.score).toBe(3280); // (160 + 9*5) * 16
+  });
 });

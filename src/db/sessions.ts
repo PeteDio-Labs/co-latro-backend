@@ -13,6 +13,13 @@ const TERMINAL = ["won_run", "lost_run"];
 function normalizeRun(state: RunState): RunState {
   const s = state as unknown as Record<string, unknown>;
   s.handLevels ??= defaultHandLevels();
+  // Hand-level keys added after this run was first persisted (e.g. PET-73 secret hands)
+  // default to level 1 so the engine doesn't trip on `undefined`.
+  const levels = s.handLevels as Record<string, number>;
+  const defaults = defaultHandLevels() as Record<string, number>;
+  for (const k of Object.keys(defaults)) {
+    if (levels[k] == null) levels[k] = 1;
+  }
   s.shop ??= null;
   s.jokers ??= [];
   s.deckComposition ??= standardFaces().map(faceCode);

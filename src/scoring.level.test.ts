@@ -35,4 +35,34 @@ describe("leveled scoring", () => {
     expect(s.handLevel).toBe(4);
     expect(s.score).toBe(5420);
   });
+
+  it("five of a kind level 2 (Planet X): +35 chips, +4 mult", () => {
+    const levels = defaultHandLevels();
+    levels.five_of_a_kind = 2;
+    const s = scoreHand(cards("9C 9D 9H 9S 9C2"), { handLevels: levels });
+    // chips 50+35 = 85; mult 12+4 = 16; cards 9*5 = 45 → (85+45)*16 = 2080
+    expect(s.handType).toBe("five_of_a_kind");
+    expect(s.handLevel).toBe(2);
+    expect(s.score).toBe(2080);
+  });
+
+  it("flush house level 2 (Ceres): +40 chips, +4 mult", () => {
+    const levels = defaultHandLevels();
+    levels.flush_house = 2;
+    const s = scoreHand(cards("KH KH2 KH3 7H 7H2"), { handLevels: levels });
+    // chips 40+40 = 80; mult 14+4 = 18; cards 10+10+10+7+7 = 44 → (80+44)*18 = 2232
+    expect(s.handType).toBe("flush_house");
+    expect(s.handLevel).toBe(2);
+    expect(s.score).toBe(2232);
+  });
+
+  it("flush five level 2 (Eris): +50 chips, +3 mult", () => {
+    const levels = defaultHandLevels();
+    levels.flush_five = 2;
+    const s = scoreHand(cards("9C 9C2 9C3 9C4 9C5"), { handLevels: levels });
+    // chips 160+50 = 210; mult 16+3 = 19; cards 9*5 = 45 → (210+45)*19 = 4845
+    expect(s.handType).toBe("flush_five");
+    expect(s.handLevel).toBe(2);
+    expect(s.score).toBe(4845);
+  });
 });
