@@ -3,8 +3,17 @@
 import { shuffle } from "../cards.ts";
 import { PER_LEVEL, type HandType } from "../scoring.ts";
 import { GameError } from "./errors.ts";
-import { JOKERS, MAX_JOKERS, type JokerDef, type JokerRarity } from "./jokers.ts";
+import { JOKERS, type JokerDef, type JokerRarity } from "./jokers.ts";
 import type { RunState } from "./run.ts";
+import { CONSUMABLES, type ConsumableDef } from "./consumables.ts";
+import { VOUCHERS, type VoucherDef } from "./vouchers.ts";
+import {
+  applyShopDiscount,
+  effectiveMaxConsumables,
+  effectiveMaxJokers,
+  effectiveRerollDiscount,
+  effectiveShopDiscountPct,
+} from "./effectives.ts";
 
 export type PlanetId =
   | "pluto" | "mercury" | "uranus" | "venus" | "saturn"
@@ -59,14 +68,34 @@ export interface JokerShopItem {
   rarity: JokerRarity;
 }
 
-export type ShopItem = PlanetShopItem | JokerShopItem;
+export interface ConsumableShopItem {
+  id: string; // "consumable:<defId>"
+  kind: "consumable";
+  consumableId: string;
+  name: string;
+  description: string;
+  cost: number;
+}
+
+export interface VoucherShopItem {
+  id: string; // "voucher:<voucherId>"
+  kind: "voucher";
+  voucherId: string;
+  name: string;
+  description: string;
+  cost: number;
+}
+
+export type ShopItem = PlanetShopItem | JokerShopItem | ConsumableShopItem | VoucherShopItem;
 
 export interface ShopState {
   items: ShopItem[];
   rerollCost: number;
+  /** Vouchers offer one slot per shop visit (Balatro). Null when VOUCHERS catalog is empty. */
+  voucher: VoucherShopItem | null;
 }
 
-function makePlanetItem(p: PlanetDef, levels: RunState["handLevels"]): PlanetShopItem {
+function makePlanetItem(p: PlanetDef, levels: RunState["handLevels"], discountPct: number): PlanetShopItem {
   const per = PER_LEVEL[p.hand];
   const current = levels[p.hand] ?? 1;
   return {
@@ -75,27 +104,50 @@ function makePlanetItem(p: PlanetDef, levels: RunState["handLevels"]): PlanetSho
     planet: p.id,
     hand: p.hand,
     name: p.name,
-    cost: PLANET_COST,
+    cost: applyShopDiscount(PLANET_COST, discountPct),
     addChips: per.chips,
     addMult: per.mult,
     targetLevel: current + 1,
   };
 }
 
-function makeJokerItem(def: JokerDef): JokerShopItem {
+function makeJokerItem(def: JokerDef, discountPct: number): JokerShopItem {
   return {
     id: `joker:${def.id}`,
     kind: "joker",
     jokerId: def.id,
     name: def.name,
     description: def.description,
-    cost: def.cost,
+    cost: applyShopDiscount(def.cost, discountPct),
     rarity: def.rarity,
+  };
+}
+
+function makeConsumableItem(def: ConsumableDef, discountPct: number): ConsumableShopItem {
+  return {
+    id: `consumable:${def.id}`,
+    kind: "consumable",
+    consumableId: def.id,
+    name: def.name,
+    description: def.description,
+    cost: applyShopDiscount(def.cost, discountPct),
+  };
+}
+
+function makeVoucherItem(def: VoucherDef, discountPct: number): VoucherShopItem {
+  return {
+    id: `voucher:${def.id}`,
+    kind: "voucher",
+    voucherId: def.id,
+    name: def.name,
+    description: def.description,
+    cost: applyShopDiscount(def.cost, discountPct),
   };
 }
 
 /** Offer SHOP_ITEM_COUNT items, each rolled joker-or-planet; distinct, jokers exclude owned. */
 export function generateShop(run: RunState, rng: () => number = Math.random): ShopState {
+  const discountPct = effectiveShopDiscountPct(run);
   const planetPool = shuffle(PLANETS, rng);
   const owned = new Set(run.jokers);
   const jokerPool = shuffle(
@@ -108,32 +160,62 @@ export function generateShop(run: RunState, rng: () => number = Math.random): Sh
   for (let slot = 0; slot < SHOP_ITEM_COUNT; slot++) {
     const rollJoker = rng() < JOKER_WEIGHT;
     if (rollJoker && ji < jokerPool.length) {
-      items.push(makeJokerItem(jokerPool[ji++]!));
+      items.push(makeJokerItem(jokerPool[ji++]!, discountPct));
     } else if (pi < planetPool.length) {
-      items.push(makePlanetItem(planetPool[pi++]!, run.handLevels));
+      items.push(makePlanetItem(planetPool[pi++]!, run.handLevels, discountPct));
     } else if (ji < jokerPool.length) {
-      items.push(makeJokerItem(jokerPool[ji++]!));
+      items.push(makeJokerItem(jokerPool[ji++]!, discountPct));
     }
   }
-  return { items, rerollCost: REROLL_BASE_COST };
+  // Voucher slot: one per shop visit, only when VOUCHERS catalog has entries.
+  let voucher: VoucherShopItem | null = null;
+  if (VOUCHERS.length > 0) {
+    const owned = new Set(run.vouchers);
+    const eligible = VOUCHERS.filter(
+      (v) => !owned.has(v.id) && (!v.requires || owned.has(v.requires)),
+    );
+    if (eligible.length > 0) {
+      const pool = shuffle(eligible, rng);
+      voucher = makeVoucherItem(pool[0]!, discountPct);
+    }
+  }
+  const rerollCost = Math.max(1, REROLL_BASE_COST - effectiveRerollDiscount(run));
+  return { items, rerollCost, voucher };
 }
 
 export function buyItem(run: RunState, itemId: unknown): void {
   if (run.status !== "shop" || !run.shop) throw new GameError(409, "bad_state", "Not at the shop");
   if (typeof itemId !== "string") throw new GameError(400, "invalid_item", "item id must be a string");
+
+  // Vouchers live in the dedicated shop.voucher slot, not shop.items.
+  if (run.shop.voucher && run.shop.voucher.id === itemId) {
+    const v = run.shop.voucher;
+    if (run.money < v.cost) throw new GameError(400, "cant_afford", "Not enough money");
+    run.money -= v.cost;
+    run.vouchers.push(v.voucherId);
+    run.shop.voucher = null;
+    return;
+  }
+
   const idx = run.shop.items.findIndex((i) => i.id === itemId);
   if (idx < 0) throw new GameError(404, "item_not_found", "Item not available");
   const item = run.shop.items[idx]!;
 
-  // Check joker slots BEFORE charging, so a full-slots buy doesn't take money.
-  if (item.kind === "joker" && run.jokers.length >= MAX_JOKERS) {
+  // Check slot caps BEFORE charging, so a full-slots buy doesn't take money.
+  if (item.kind === "joker" && run.jokers.length >= effectiveMaxJokers(run)) {
     throw new GameError(400, "slots_full", "Joker slots are full — sell one first");
+  }
+  if (item.kind === "consumable" && run.consumables.length >= effectiveMaxConsumables(run)) {
+    throw new GameError(400, "slots_full", "Consumable slots are full — sell or use one first");
   }
   if (run.money < item.cost) throw new GameError(400, "cant_afford", "Not enough money");
 
   run.money -= item.cost;
   if (item.kind === "planet") levelUpHand(run, item.hand);
-  else run.jokers.push(item.jokerId);
+  else if (item.kind === "joker") run.jokers.push(item.jokerId);
+  else if (item.kind === "consumable") {
+    run.consumables.push({ id: crypto.randomUUID(), defId: item.consumableId });
+  }
   run.shop.items.splice(idx, 1);
 }
 

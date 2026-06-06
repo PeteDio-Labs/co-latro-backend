@@ -15,10 +15,13 @@ import {
   playHand,
   previewSelection,
   rerollShop,
+  sellConsumable,
   sellJoker,
+  skipBlind,
   startBlind,
   startRun,
   toRunDTO,
+  useConsumable,
   type RunState,
 } from "../engine.ts";
 import { deleteActiveRuns, getActiveRun, insertRun, saveRun } from "../db/sessions.ts";
@@ -121,6 +124,29 @@ export function createRunRouter(db: DB): Router {
   router.post("/continue", async (req, res) => {
     const run = await requireActive(db, req.userId!);
     continueRun(run);
+    await saveRun(db, run);
+    res.json(toRunDTO(run));
+  });
+
+  // Consumables: use / sell. Skeleton routes — content streams (PET-71/72) wire the effects.
+  router.post("/consumable/use", async (req, res) => {
+    const run = await requireActive(db, req.userId!);
+    useConsumable(run, req.body?.instanceId, req.body?.selectedCardIds);
+    await saveRun(db, run);
+    res.json(toRunDTO(run));
+  });
+
+  router.post("/consumable/sell", async (req, res) => {
+    const run = await requireActive(db, req.userId!);
+    sellConsumable(run, req.body?.instanceId);
+    await saveRun(db, run);
+    res.json(toRunDTO(run));
+  });
+
+  // Skip the upcoming blind (small/big only). Tag-reward payout lands with PET-83.
+  router.post("/skip", async (req, res) => {
+    const run = await requireActive(db, req.userId!);
+    skipBlind(run);
     await saveRun(db, run);
     res.json(toRunDTO(run));
   });

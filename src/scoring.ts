@@ -161,10 +161,45 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
     }
   }
 
+  // Per-card modifier pre-pass (PET-67 hook). Enhancements/editions/seals contribute to
+  // chips/mult/xMult BEFORE the joker fold. With no card carrying any of these — current
+  // default — this loop is a no-op. Content stream PET-75 expands each switch arm.
+  let modChips = 0;
+  let modMult = 0;
+  let modXMult = 1;
+  for (const card of scoredCards) {
+    if (card.enhancement) {
+      switch (card.enhancement) {
+        case "bonus":
+        case "mult":
+        case "wild":
+        case "glass":
+        case "steel":
+        case "stone":
+        case "gold":
+        case "lucky":
+          // PET-75 wires per-enhancement contributions here.
+          break;
+      }
+    }
+    if (card.edition) {
+      switch (card.edition) {
+        case "foil":
+        case "holo":
+        case "poly":
+        case "negative":
+          // PET-75 wires per-edition contributions here.
+          break;
+      }
+    }
+    // Seals (red/blue/gold/purple) act on the run, not on chips/mult — wired in run.ts hooks
+    // when content streams populate them. No-op here.
+  }
+
   // Fold jokers left-to-right onto the running totals. Order matters: ×Mult applies to the
   // mult that exists at that joker's slot, so a ×Mult after +Mult scores higher.
-  let chips = baseChips + scoringChips;
-  let mult = baseMult;
+  let chips = baseChips + scoringChips + modChips;
+  let mult = (baseMult + modMult) * modXMult;
   const jokerSteps: JokerStep[] = [];
   const jokerIds = ctx?.jokers ?? [];
   if (jokerIds.length > 0) {
