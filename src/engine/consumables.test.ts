@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { GameError, sellConsumable, useConsumable, type RunState } from "./run.ts";
+import {
+  GameError,
+  sellConsumable,
+  startBlind,
+  useConsumable,
+  type RunState,
+} from "./run.ts";
 import { CONSUMABLE_BY_ID } from "./consumables.ts";
 import { faceCode, standardFaces, type Card } from "../cards.ts";
 import { cards } from "../testkit.ts";
@@ -366,5 +372,107 @@ describe("useConsumable — spectrals (deferred placeholders)", () => {
     useConsumable(run, id);
     expect(run.money).toBe(10);
     expect(run.consumables).toEqual([]);
+  });
+});
+
+// ---- deckEnhancements key-space (PET-67 reconciliation) -------------------
+//
+// These tests pin the face-code key convention. The bug they guard against: PET-71 used to write
+// per-card-instance ids ("KH-0") which regenerate on every shuffle (instantiateDeck), so a tarot
+// enhancement vanished on the next blind. Face-code keys ("KH") inherit onto every future
+// instance of that face — see the deckEnhancements field doc + the comment in useConsumable.
+
+describe("deckEnhancements — face-code key persistence", () => {
+  it("persists an enhancement across a reshuffle (next blind's KH still has Mult)", () => {
+    // Enhance KH with Mult via The Empress, then transition to selecting_blind and re-deal.
+    const run = makeRun({ hand: cards("KH KS 3D 7C 9S") });
+    const id = giveTarot(run, "the_empress");
+    useConsumable(run, id, ["KH", "KS"]);
+    // In-hand badge applied this blind.
+    expect(run.hand.find((c) => c.id === "KH")!.enhancement).toBe("mult");
+    // Persisted by face code (not by id "KH-0" or similar).
+    expect(run.deckEnhancements?.["KH"]?.enhancement).toBe("mult");
+
+    // Reshuffle for the next blind — startBlind re-instantiates from deckComposition.
+    run.status = "selecting_blind";
+    startBlind(run, () => 0);
+
+    // Every instance of KH in the new hand AND deck carries the mult enhancement.
+    const allCards = [...run.hand, ...run.deck];
+    const kingsOfHearts = allCards.filter((c) => c.rank === 13 && c.suit === "hearts");
+    expect(kingsOfHearts.length).toBe(1);
+    for (const kh of kingsOfHearts) expect(kh.enhancement).toBe("mult");
+  });
+
+  it("second enhancement of the same face overwrites the first cleanly", () => {
+    // The Tower applies Stone first, then The Empress applies Mult to the same face.
+    const run = makeRun({ hand: cards("KH 2C 3D 4H 5S") });
+    const tower = giveTarot(run, "the_tower", "inst-tow");
+    useConsumable(run, tower, ["KH"]);
+    expect(run.deckEnhancements?.["KH"]?.enhancement).toBe("stone");
+
+    // Second consumable on the same face — should overwrite.
+    const empress = giveTarot(run, "the_empress", "inst-emp");
+    // Empress wants 2 selections — give it KH plus a filler so we can target KH specifically.
+    useConsumable(run, empress, ["KH", "2C"]);
+    expect(run.deckEnhancements?.["KH"]?.enhancement).toBe("mult");
+    // In-hand card reflects the latest enhancement too.
+    expect(run.hand.find((c) => c.id === "KH")!.enhancement).toBe("mult");
+  });
+
+  it("enhancement + edition coexist on the same face (merged, not overwritten)", () => {
+    // Mult enhancement via Empress, then a Foil edition via direct overlay write (no foil tarot
+    // in the catalog yet — we exercise the recordDeckMod merge path through the seal_selected /
+    // edition_selected family by setting deckEnhancements directly to simulate a future writer).
+    const run = makeRun({ hand: cards("KH KS 3D 7C 9S") });
+    const empress = giveTarot(run, "the_empress");
+    useConsumable(run, empress, ["KH", "KS"]);
+    expect(run.deckEnhancements?.["KH"]?.enhancement).toBe("mult");
+
+    // Simulate a future edition-on-face writer (the merge contract recordDeckMod guarantees).
+    run.deckEnhancements!["KH"] = {
+      ...(run.deckEnhancements!["KH"] ?? {}),
+      edition: "foil",
+    };
+
+    // Reshuffle — face overlay merges enhancement + edition onto the new instance.
+    run.status = "selecting_blind";
+    startBlind(run, () => 0);
+    const kh = [...run.hand, ...run.deck].find((c) => c.rank === 13 && c.suit === "hearts")!;
+    expect(kh.enhancement).toBe("mult");
+    expect(kh.edition).toBe("foil");
+  });
+
+  it("destroy_selected removes the overlay entry once the LAST instance of that face is gone", () => {
+    // Enhance KH (single instance in standard deck), then The Hanged Man destroys it.
+    const run = makeRun({ hand: cards("KH 2C 3D 4H 5S") });
+    const tower = giveTarot(run, "the_tower", "inst-tow");
+    useConsumable(run, tower, ["KH"]);
+    expect(run.deckEnhancements?.["KH"]?.enhancement).toBe("stone");
+    expect(run.deckComposition.includes("KH")).toBe(true);
+
+    // Hanged Man needs 2 selections — destroy KH + a filler.
+    const hanged = giveTarot(run, "the_hanged_man", "inst-hng");
+    useConsumable(run, hanged, ["KH", "2C"]);
+    // KH no longer in composition → overlay entry pruned (avoid stale overlays piling up).
+    expect(run.deckComposition.includes("KH")).toBe(false);
+    expect(run.deckEnhancements?.["KH"]).toBeUndefined();
+  });
+
+  it("destroy_selected KEEPS the overlay entry when a duplicate of that face remains", () => {
+    // Two KH in deckComposition (simulate Cryptid having dup'd KH earlier). Destroy one — the
+    // overlay must survive because the surviving KH instance would otherwise lose its badge.
+    const run = makeRun({
+      hand: cards("KH 2C 3D 4H 5S"),
+      deckComposition: [...standardFaces().map(faceCode), "KH"], // 53 faces, 2 KH
+    });
+    // Seed an enhancement on the face manually (skip the consumable to focus on the prune path).
+    run.deckEnhancements = { KH: { enhancement: "mult" } };
+
+    const hanged = giveTarot(run, "the_hanged_man", "inst-hng2");
+    useConsumable(run, hanged, ["KH", "2C"]);
+    // One KH gone from composition, one remains → overlay must persist.
+    expect(run.deckComposition.filter((f) => f === "KH").length).toBe(1);
+    expect(run.deckEnhancements?.["KH"]?.enhancement).toBe("mult");
   });
 });

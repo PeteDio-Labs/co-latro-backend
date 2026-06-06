@@ -113,11 +113,11 @@ export interface RunState {
   heldGoldRoundEnd: boolean;
 
   /**
-   * Per-card modifier overlay persisted across shuffles.
-   * Keys may be card.id ("${faceCode}-${n}", per-instance) OR a bare face code ("KH", per-face).
-   * Tarot uses mutates run.hand directly + writes per-instance entries; future voucher / sticker
-   * hooks may write per-face. Optional so legacy persisted runs deserialize cleanly.
-   * (Reconcile the two key spaces in a follow-up — for now applyDeckEnhancements tries both.)
+   * Per-FACE modifier overlay persisted across shuffles. Keys are face codes ("KH"), so every
+   * instance of that face inherits the modifier on the next deal — Balatro's per-instance
+   * semantic is approximated. The "two KH but only enhance one" edge case is intentionally lost
+   * in prealpha; a future refactor would carry instance ids in deckComposition.
+   * Optional so legacy persisted runs deserialize cleanly.
    */
   deckEnhancements?: Record<
     string,
@@ -742,13 +742,20 @@ function resolveCardsFromHand(run: RunState, ids: string[]): Card[] {
   });
 }
 
+/**
+ * Persist a modifier patch onto the deck overlay, keyed by FACE CODE (not card.id).
+ * Per-instance ids regenerate on every shuffle (instantiateDeck), so keying by id silently
+ * drops the modifier on the next blind — keying by face means every future instance of that
+ * face inherits it. See the deckEnhancements field doc for the prealpha trade-off.
+ */
 function recordDeckMod(
   run: RunState,
-  cardId: string,
+  card: Card,
   patch: { enhancement?: CardEnhancement; edition?: CardEdition; seal?: CardSeal },
 ): void {
   if (!run.deckEnhancements) run.deckEnhancements = {};
-  run.deckEnhancements[cardId] = { ...(run.deckEnhancements[cardId] ?? {}), ...patch };
+  const code = faceCode({ rank: card.rank, suit: card.suit });
+  run.deckEnhancements[code] = { ...(run.deckEnhancements[code] ?? {}), ...patch };
 }
 
 /** All standard poker HandTypes that a level-random-hand tarot can pick from. */
@@ -775,23 +782,25 @@ function applyConsumableEffect(
     case "noop":
       return;
     case "enhance_selected": {
+      // Mutate the in-hand card so the badge is visible THIS blind; recordDeckMod persists by
+      // face code so all instances of that face inherit it on the next shuffle.
       for (const card of selectedCards) {
         card.enhancement = effect.enhancement;
-        recordDeckMod(run, card.id, { enhancement: effect.enhancement });
+        recordDeckMod(run, card, { enhancement: effect.enhancement });
       }
       return;
     }
     case "edition_selected": {
       for (const card of selectedCards) {
         card.edition = effect.edition;
-        recordDeckMod(run, card.id, { edition: effect.edition });
+        recordDeckMod(run, card, { edition: effect.edition });
       }
       return;
     }
     case "seal_selected": {
       for (const card of selectedCards) {
         card.seal = effect.seal;
-        recordDeckMod(run, card.id, { seal: effect.seal });
+        recordDeckMod(run, card, { seal: effect.seal });
       }
       return;
     }
@@ -803,8 +812,10 @@ function applyConsumableEffect(
         const code = faceCode({ rank: card.rank, suit: card.suit });
         const compIdx = run.deckComposition.indexOf(code);
         if (compIdx >= 0) run.deckComposition.splice(compIdx, 1);
-        // Drop any persisted modifier for the destroyed instance — it's gone.
-        if (run.deckEnhancements) delete run.deckEnhancements[card.id];
+        // Face overlay is keyed by face code: only drop it when the LAST instance of that face
+        // is gone from the composition (otherwise surviving instances of the same face would
+        // silently lose their modifier).
+        pruneDeckEnhancement(run, code);
       }
       return;
     }
@@ -999,8 +1010,15 @@ function destroyRandomFromHand(run: RunState, n: number, rng: () => number): voi
     const code = faceCode({ rank: card.rank, suit: card.suit });
     const compIdx = run.deckComposition.indexOf(code);
     if (compIdx >= 0) run.deckComposition.splice(compIdx, 1);
-    if (run.deckEnhancements) delete run.deckEnhancements[card.id];
+    pruneDeckEnhancement(run, code);
   }
+}
+
+/** Drop the overlay entry for `code` ONLY when no instances of that face remain in the composition. */
+function pruneDeckEnhancement(run: RunState, code: string): void {
+  if (!run.deckEnhancements) return;
+  if (run.deckComposition.includes(code)) return;
+  delete run.deckEnhancements[code];
 }
 
 /** Append a random card (from the allowed ranks, any suit) to the deckComposition. */
