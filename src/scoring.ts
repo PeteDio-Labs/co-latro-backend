@@ -81,6 +81,12 @@ export interface ScoreContext {
   jokers?: string[];
   handsRemaining?: number;
   discardsRemaining?: number;
+  /** Per-blind discard count (drives on_discard_chips). */
+  discardsUsedThisBlind?: number;
+  /** Current money (drives per_5_dollars_mult). */
+  money?: number;
+  /** Per-joker counter state (drives scaling_per_blind_*). */
+  jokerStates?: Record<string, { counter: number }>;
 }
 
 /** One joker's contribution during scoring — drives the play-resolution animation. */
@@ -150,13 +156,25 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
   const baseChips = base.chips + (level - 1) * per.chips;
   const baseMult = base.mult + (level - 1) * per.mult;
 
+  // Retrigger pre-pass: count owned jokers with retrigger_face so face cards score chips
+  // (1 + retriggerCount) times. Affects the scoring-card chip loop ONLY; the joker fold
+  // still adds an animation step for each retrigger joker but no chip delta there.
+  const jokerIds = ctx?.jokers ?? [];
+  let retriggerFaceCount = 0;
+  for (const jid of jokerIds) {
+    const def = JOKER_BY_ID.get(jid);
+    if (def?.effect.kind === "retrigger_face") retriggerFaceCount += 1;
+  }
+
   const cardById = new Map(played.map((c) => [c.id, c]));
   let scoringChips = 0;
   const scoredCards: Card[] = [];
   for (const id of scoringCardIds) {
     const card = cardById.get(id);
     if (card) {
-      scoringChips += chipValue(card.rank);
+      const isFace = card.rank >= 11 && card.rank <= 13;
+      const mult = isFace ? 1 + retriggerFaceCount : 1;
+      scoringChips += chipValue(card.rank) * mult;
       scoredCards.push(card);
     }
   }
@@ -201,7 +219,6 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
   let chips = baseChips + scoringChips + modChips;
   let mult = (baseMult + modMult) * modXMult;
   const jokerSteps: JokerStep[] = [];
-  const jokerIds = ctx?.jokers ?? [];
   if (jokerIds.length > 0) {
     const features = handFeatures(played);
     for (const jid of jokerIds) {
@@ -251,9 +268,40 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
         case "x_mult_contains":
           if (features[e.feature]) mult *= e.xMult;
           break;
+        case "retrigger_face":
+          // Chip impact already applied in the scoring-card pre-pass; no fold delta here.
+          break;
+        case "scaling_per_blind_mult": {
+          const counter = ctx?.jokerStates?.[jid]?.counter ?? 0;
+          mult += counter * e.mult;
+          break;
+        }
+        case "scaling_per_blind_chips": {
+          const counter = ctx?.jokerStates?.[jid]?.counter ?? 0;
+          chips += counter * e.chips;
+          break;
+        }
+        case "economy_per_hand_played":
+          // Money payout happens in run.ts after scoring; no chip/mult delta here.
+          break;
+        case "on_discard_chips":
+          chips += (ctx?.discardsUsedThisBlind ?? 0) * e.chips;
+          break;
+        case "flat_chips_and_mult":
+          chips += e.chips;
+          mult += e.mult;
+          break;
+        case "per_5_dollars_mult":
+          mult += Math.floor((ctx?.money ?? 0) / 5) * e.mult;
+          break;
       }
       if (e.kind === "x_mult_contains") {
         if (mult !== beforeMult) jokerSteps.push({ jokerId: jid, name: def.name, xMult: e.xMult });
+      } else if (e.kind === "retrigger_face") {
+        // Always log an animation step when this joker is owned and there were face cards scored.
+        if (scoredCards.some((c) => c.rank >= 11 && c.rank <= 13)) {
+          jokerSteps.push({ jokerId: jid, name: def.name });
+        }
       } else {
         const dChips = chips - beforeChips;
         const dMult = mult - beforeMult;

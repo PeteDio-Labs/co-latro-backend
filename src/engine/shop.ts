@@ -10,7 +10,7 @@ import {
 } from "../cards.ts";
 import { PER_LEVEL, type HandType } from "../scoring.ts";
 import { GameError } from "./errors.ts";
-import { JOKERS, type JokerDef, type JokerRarity } from "./jokers.ts";
+import { JOKERS, isScalingEffect, type JokerDef, type JokerRarity } from "./jokers.ts";
 import type { RunState } from "./run.ts";
 import { CONSUMABLES, type ConsumableDef } from "./consumables.ts";
 import {
@@ -287,8 +287,13 @@ export function buyItem(run: RunState, itemId: unknown): void {
 
   run.money -= item.cost;
   if (item.kind === "planet") levelUpHand(run, item.hand);
-  else if (item.kind === "joker") run.jokers.push(item.jokerId);
-  else if (item.kind === "consumable") {
+  else if (item.kind === "joker") {
+    run.jokers.push(item.jokerId);
+    const def = JOKERS.find((j) => j.id === item.jokerId);
+    if (def && isScalingEffect(def.effect)) {
+      run.jokerStates[item.jokerId] = { counter: 0 };
+    }
+  } else if (item.kind === "consumable") {
     run.consumables.push({ id: crypto.randomUUID(), defId: item.consumableId });
   } else if (item.kind === "pack") {
     // Booster pack — remove from shop and open it (status → "pack_open").

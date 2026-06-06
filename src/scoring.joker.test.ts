@@ -68,6 +68,68 @@ describe("joker effects", () => {
   });
 });
 
+describe("PET-74 expansion effects", () => {
+  it("retrigger_face (Vagabond): face card chips score twice; non-face untouched", () => {
+    // KH KS 3D 7C 9S → pair of K's scored. K chip value = 10 each. Base pair: 10/2.
+    // Without retrigger: (10 + 10+10) × 2 = 60. With one retrigger: face chips × 2 → (10 + 20+20) × 2 = 100.
+    expect(scoreHand(cards("KH KS 3D 7C 9S"), ctx(["vagabond"])).score).toBe(100);
+    // No face cards scored → retrigger is a no-op.
+    expect(scoreHand(cards("8H 8S 3D 7C 9S"), ctx(["vagabond"])).score).toBe(52); // (10 + 8+8) × 2
+  });
+
+  it("retrigger_face stacks: two retrigger jokers triple face chip contribution", () => {
+    // (10 + 10×3 + 10×3) × 2 = 140.
+    expect(scoreHand(cards("KH KS 3D 7C 9S"), ctx(["vagabond", "hanging_chad"])).score).toBe(140);
+  });
+
+  it("scaling_per_blind_mult (Green Joker): mult scales by counter", () => {
+    // counter=0 → +0 mult
+    expect(scoreHand(cards("KH KS 3D 7C 9S"), ctx(["green_joker"], { jokerStates: { green_joker: { counter: 0 } } })).score).toBe(60);
+    // counter=5, +1 each → +5 mult: (10+20) × (2+5) = 210
+    expect(scoreHand(cards("KH KS 3D 7C 9S"), ctx(["green_joker"], { jokerStates: { green_joker: { counter: 5 } } })).score).toBe(210);
+  });
+
+  it("scaling_per_blind_chips (Square Joker): chips scale by counter", () => {
+    // counter=4, +4 each → +16 chips: (10+20+16) × 2 = 92
+    expect(scoreHand(cards("KH KS 3D 7C 9S"), ctx(["square_joker"], { jokerStates: { square_joker: { counter: 4 } } })).score).toBe(92);
+  });
+
+  it("on_discard_chips (Frugal): +chips × discardsUsedThisBlind", () => {
+    // 2 discards used, +50 each → +100 chips: (10+20+100) × 2 = 260
+    expect(scoreHand(cards("KH KS 3D 7C 9S"), ctx(["frugal_joker"], { discardsUsedThisBlind: 2 })).score).toBe(260);
+    // 0 discards used → no contribution.
+    expect(scoreHand(cards("KH KS 3D 7C 9S"), ctx(["frugal_joker"], { discardsUsedThisBlind: 0 })).score).toBe(60);
+  });
+
+  it("flat_chips_and_mult (Walkie Talkie): adds both chips and mult in one step", () => {
+    // (10+20+10) × (2+4) = 240
+    const result = scoreHand(cards("KH KS 3D 7C 9S"), ctx(["walkie_talkie"]));
+    expect(result.score).toBe(240);
+    expect(result.jokerSteps).toEqual([
+      { jokerId: "walkie_talkie", name: "Walkie Talkie", deltaChips: 10, deltaMult: 4 },
+    ]);
+  });
+
+  it("per_5_dollars_mult (Bull): +mult × floor(money / 5)", () => {
+    // $12 → floor(12/5)=2, +2 each → +4 mult: 30 × (2+4) = 180
+    expect(scoreHand(cards("KH KS 3D 7C 9S"), ctx(["bull"], { money: 12 })).score).toBe(180);
+    // $4 → 0 contribution.
+    expect(scoreHand(cards("KH KS 3D 7C 9S"), ctx(["bull"], { money: 4 })).score).toBe(60);
+  });
+
+  it("economy_per_hand_played has no chip/mult contribution during scoring", () => {
+    // Cloud 9 only pays out money in run.ts — scoring output is the no-joker baseline.
+    expect(scoreHand(cards("KH KS 3D 7C 9S"), ctx(["cloud_9"])).score).toBe(60);
+  });
+
+  it("retrigger_face logs an animation step only when faces were scored", () => {
+    const withFace = scoreHand(cards("KH KS 3D 7C 9S"), ctx(["vagabond"]));
+    expect(withFace.jokerSteps).toEqual([{ jokerId: "vagabond", name: "Vagabond" }]);
+    const noFace = scoreHand(cards("8H 8S 3D 7C 9S"), ctx(["vagabond"]));
+    expect(noFace.jokerSteps).toHaveLength(0);
+  });
+});
+
 describe("handFeatures (contains semantics)", () => {
   it("full house contains pair + two_pair + three_of_a_kind", () => {
     expect(handFeatures(cards("KH KS KD 7C 7S"))).toEqual({

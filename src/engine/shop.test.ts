@@ -78,6 +78,25 @@ describe("buyItem — joker", () => {
     expect(run.shop.items.length).toBe(0);
   });
 
+  it("initializes jokerStates counter=0 when buying a scaling joker (PET-74)", () => {
+    const run = startRun("medium", "u");
+    run.status = "shop";
+    run.money = 10;
+    run.shop = { items: [jokerItem("green_joker", 4)], rerollCost: 5, voucher: null };
+    buyItem(run, "joker:green_joker");
+    expect(run.jokers).toEqual(["green_joker"]);
+    expect(run.jokerStates.green_joker).toEqual({ counter: 0 });
+  });
+
+  it("does NOT touch jokerStates for non-scaling jokers", () => {
+    const run = startRun("medium", "u");
+    run.status = "shop";
+    run.money = 10;
+    run.shop = { items: [jokerItem("joker", 2)], rerollCost: 5, voucher: null };
+    buyItem(run, "joker:joker");
+    expect(run.jokerStates.joker).toBeUndefined();
+  });
+
   it("rejects when joker slots are full — money unchanged", () => {
     const run = startRun("medium", "u");
     run.status = "shop";
