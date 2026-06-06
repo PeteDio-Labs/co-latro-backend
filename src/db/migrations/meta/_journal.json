@@ -8,6 +8,13 @@
       "when": 1780455863046,
       "tag": "0000_huge_maginty",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1780752743511,
+      "tag": "0001_event_counts",
+      "breakpoints": true
     }
   ]
 }

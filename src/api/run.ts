@@ -27,6 +27,7 @@ import {
   type RunState,
 } from "../engine.ts";
 import { deleteActiveRuns, getActiveRun, insertRun, saveRun } from "../db/sessions.ts";
+import { incHandPlayed, incRunLost, incRunStarted, incRunWon } from "../db/analytics.ts";
 import type { ScoreBreakdown } from "../scoring.ts";
 
 export function createRunRouter(db: DB): Router {
@@ -49,6 +50,7 @@ export function createRunRouter(db: DB): Router {
     await deleteActiveRuns(db, req.userId!); // overwrite any in-progress run
     const run = startRun(difficulty, req.userId!, deckId);
     await insertRun(db, run);
+    incRunStarted(db); // PET-65: fire-and-forget; safe after the run is persisted
     res.status(201).json(toRunDTO(run));
   });
 
@@ -71,8 +73,15 @@ export function createRunRouter(db: DB): Router {
 
   router.post("/play", async (req, res) => {
     const run = await requireActive(db, req.userId!);
+    const beforeStatus = run.status;
     playHand(run, req.body?.selectedCardIds);
     await saveRun(db, run);
+    // PET-65: counters fire after the engine call so we only count successful plays.
+    incHandPlayed(db);
+    if (run.status !== beforeStatus) {
+      if (run.status === "won_run") incRunWon(db);
+      else if (run.status === "lost_run") incRunLost(db);
+    }
     res.json(toRunDTO(run));
   });
 
