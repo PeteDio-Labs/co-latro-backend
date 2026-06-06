@@ -42,10 +42,11 @@ describe("generateShop", () => {
     expect(shop.rerollCost).toBe(5);
   });
 
-  it("joker roll (rng→0): 3 distinct jokers, none already owned", () => {
+  it("joker roll (rng→0.3): 3 distinct jokers, none already owned", () => {
     const run = startRun("medium", "u");
     run.jokers = ["joker"]; // owned — must be excluded
-    const shop = generateShop(run, () => 0);
+    // 0.3 >= PACK_WEIGHT (0.1) → no pack; 0.3 < JOKER_WEIGHT (0.45) → joker each slot.
+    const shop = generateShop(run, () => 0.3);
     expect(shop.items.every((i) => i.kind === "joker")).toBe(true);
     expect(new Set(shop.items.map((i) => i.id)).size).toBe(SHOP_ITEM_COUNT);
     expect(shop.items.some((i) => i.kind === "joker" && i.jokerId === "joker")).toBe(false);
@@ -75,6 +76,25 @@ describe("buyItem — joker", () => {
     expect(run.jokers).toEqual(["joker"]);
     expect(run.money).toBe(8);
     expect(run.shop.items.length).toBe(0);
+  });
+
+  it("initializes jokerStates counter=0 when buying a scaling joker (PET-74)", () => {
+    const run = startRun("medium", "u");
+    run.status = "shop";
+    run.money = 10;
+    run.shop = { items: [jokerItem("green_joker", 4)], rerollCost: 5, voucher: null };
+    buyItem(run, "joker:green_joker");
+    expect(run.jokers).toEqual(["green_joker"]);
+    expect(run.jokerStates.green_joker).toEqual({ counter: 0 });
+  });
+
+  it("does NOT touch jokerStates for non-scaling jokers", () => {
+    const run = startRun("medium", "u");
+    run.status = "shop";
+    run.money = 10;
+    run.shop = { items: [jokerItem("joker", 2)], rerollCost: 5, voucher: null };
+    buyItem(run, "joker:joker");
+    expect(run.jokerStates.joker).toBeUndefined();
   });
 
   it("rejects when joker slots are full — money unchanged", () => {

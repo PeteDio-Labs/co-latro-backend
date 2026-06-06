@@ -58,20 +58,28 @@ export function evaluateHand(played: Card[]): EvaluatedHand {
     throw new RangeError(`evaluateHand expects 1-5 cards, got ${n}`);
   }
 
-  const byRank = groupBy(played, (c) => c.rank);
-  const bySuit = groupBy(played, (c) => c.suit);
+  // PET-75: stone cards are rank/suit-less for shape detection (still score chips though).
+  // Wild cards count as ANY suit for flush detection; their rank still counts normally.
+  const nonStone = played.filter((c) => c.enhancement !== "stone");
+  const nonStoneNonWild = nonStone.filter((c) => c.enhancement !== "wild");
+
+  const byRank = groupBy(nonStone, (c) => c.rank);
+  const bySuit = groupBy(nonStoneNonWild, (c) => c.suit);
 
   // Rank-count signature, descending: e.g. [4,1], [3,2], [2,2,1], [2,1,1,1], [1,...].
   const counts = [...byRank.values()].map((g) => g.length).sort((a, b) => b - a);
   const top = counts[0] ?? 0;
   const second = counts[1] ?? 0;
 
-  // Flush requires exactly 5 cards of one suit. Straight requires 5 distinct ranks.
-  const isFlush = n === 5 && bySuit.size === 1;
+  // Flush requires exactly 5 cards of one suit. Wilds count as any suit, so if all
+  // non-wild non-stone cards share a suit AND we still have 5 total cards played, it's a flush.
+  // Stone cards never contribute to the flush.
+  const allOneSuit = bySuit.size <= 1; // (size 0 = all wild, treated as a flush)
+  const isFlush = n === 5 && nonStone.length === 5 && allOneSuit;
 
-  const ranksAsc = played.map((c) => c.rank).sort((a, b) => a - b);
+  const ranksAsc = nonStone.map((c) => c.rank).sort((a, b) => a - b);
   let isStraight = false;
-  if (n === 5 && byRank.size === 5) {
+  if (n === 5 && nonStone.length === 5 && byRank.size === 5) {
     const min = ranksAsc[0]!;
     const max = ranksAsc[4]!;
     // Ace-low wheel A-2-3-4-5 sorts ascending to [2,3,4,5,14].
@@ -136,11 +144,19 @@ export function evaluateHand(played: Card[]): EvaluatedHand {
     scoring = cardsWithCount(byRank, 2);
   } else {
     handType = "high_card";
-    scoring = [highestCard(played)];
+    // Stones are rank-less and never qualify as the highest card. If every card is stone
+    // (degenerate but reachable) there's no rank-bearing card to score on its own — fall
+    // back to the first played card so we always emit a single high-card id.
+    scoring = nonStone.length > 0 ? [highestCard(nonStone)] : [played[0]!];
   }
 
-  // Emit scoring ids in INPUT order so the UI highlight is stable.
+  // PET-75: stone cards always score (they contribute +50 chips per stone via the modifier
+  // pre-pass), even when the hand type would otherwise exclude kickers. Re-add them.
   const scoringSet = new Set(scoring.map((c) => c.id));
+  for (const c of played) {
+    if (c.enhancement === "stone") scoringSet.add(c.id);
+  }
+  // Emit scoring ids in INPUT order so the UI highlight is stable.
   const scoringCardIds = played.filter((c) => scoringSet.has(c.id)).map((c) => c.id);
 
   return { handType, scoringCardIds };

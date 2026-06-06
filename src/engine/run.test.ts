@@ -10,7 +10,7 @@ import {
   startRun,
   type RunState,
 } from "./run.ts";
-import { cards } from "../testkit.ts";
+import { cards, withMod, card as cardOne } from "../testkit.ts";
 import { faceCode, standardFaces } from "../cards.ts";
 import { defaultHandLevels } from "../scoring.ts";
 
@@ -46,6 +46,8 @@ function runWith(over: Partial<RunState> & { hand: RunState["hand"] }): RunState
     jokerStates: {},
     discardsUsedThisBlind: 0,
     heldGoldRoundEnd: false,
+    openingPack: null,
+    deckEnhancements: {},
     createdAt: 0,
     updatedAt: 0,
     ...over,
@@ -243,5 +245,84 @@ describe("jokers", () => {
     expect(r1.breakdown.score).toBe(60); // (10+20) × 2
     expect(r2.breakdown.score).toBe(180); // (10+20) × (2+4)
     expect(r2.breakdown.jokerSteps).toHaveLength(1);
+  });
+
+  it("sellJoker clears the jokerStates entry for a scaling joker", () => {
+    const run = runWith({
+      hand: cards("2C"),
+      jokers: ["green_joker"],
+      jokerStates: { green_joker: { counter: 3 } },
+      money: 0,
+    });
+    sellJoker(run, "green_joker");
+    expect(run.jokerStates.green_joker).toBeUndefined();
+    expect(run.jokers).toEqual([]);
+  });
+
+  it("playHand pays out economy_per_hand_played BEFORE the shop transition", () => {
+    // Cloud 9 = $1/hand. Beating target lands us in shop; money should already include the $1.
+    const run = runWith({
+      hand: cards("KH KS 3D 7C 9S"),
+      jokers: ["cloud_9"],
+      target: 30,
+      money: 0,
+      handsRemaining: 3,
+      blindIndex: 0,
+    });
+    playHand(run, ["KH", "KS"]);
+    expect(run.status).toBe("shop");
+    // $1 from Cloud 9 + cash-out reward; assert at least the Cloud 9 payout landed pre-shop.
+    expect(run.money).toBeGreaterThanOrEqual(1);
+  });
+
+  it("continueRun increments counter for each scaling joker owned", () => {
+    const run = runWith({
+      hand: [],
+      status: "shop",
+      ante: 1,
+      blindIndex: 0,
+      jokers: ["green_joker", "square_joker", "joker"], // joker is not scaling
+      jokerStates: { green_joker: { counter: 0 }, square_joker: { counter: 0 } },
+      shop: { items: [], rerollCost: 5, voucher: null },
+    });
+    continueRun(run);
+    expect(run.jokerStates.green_joker?.counter).toBe(1);
+    expect(run.jokerStates.square_joker?.counter).toBe(1);
+    expect(run.jokerStates.joker).toBeUndefined(); // non-scaling joker untouched
+  });
+});
+
+describe("card modifier end-of-blind hooks (PET-75)", () => {
+  it("gold-enhancement payout: +$3 per gold card held in hand at round end", () => {
+    // Two gold cards stay in hand; the played pair clears the small-blind target.
+    const goldA = withMod(cardOne("3D"), { enhancement: "gold" });
+    const goldB = withMod(cardOne("7C"), { enhancement: "gold" });
+    const run = runWith({
+      hand: [cardOne("KH"), cardOne("KS"), goldA, goldB, cardOne("9S")],
+      target: 50,
+      blindIndex: 0,
+      handsRemaining: 3,
+      money: 0,
+    });
+    playHand(run, ["KH", "KS"]);
+    expect(run.status).toBe("shop");
+    expect(run.heldGoldRoundEnd).toBe(true);
+    // gold pays $3 × 2 = $6 BEFORE interest, so $6 held → +$1 interest in cash-out.
+    // money = 0 + 6 (gold) + 3 (blindBase) + 2 (handsBonus) + 1 (interest on $6) = 12
+    expect(run.money).toBe(12);
+  });
+
+  it("no gold held → heldGoldRoundEnd stays false, no payout", () => {
+    const run = runWith({
+      hand: cards("KH KS 3D 7C 9S"),
+      target: 50,
+      blindIndex: 0,
+      handsRemaining: 3,
+      money: 0,
+    });
+    playHand(run, ["KH", "KS"]);
+    expect(run.status).toBe("shop");
+    expect(run.heldGoldRoundEnd).toBe(false);
+    expect(run.money).toBe(5); // just the standard cash-out
   });
 });

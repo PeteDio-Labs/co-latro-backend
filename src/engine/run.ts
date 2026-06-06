@@ -10,6 +10,9 @@ import {
   parseFace,
   shuffle,
   type Card,
+  type CardEdition,
+  type CardEnhancement,
+  type CardSeal,
   type Face,
   type Rank,
   type Suit,
@@ -19,6 +22,7 @@ import {
   defaultHandLevels,
   scoreHand,
   type HandLevels,
+  type HandType,
   type ScoreBreakdown,
   type ScoreContext,
 } from "../scoring.ts";
@@ -32,13 +36,20 @@ import {
   type CashOutBreakdown,
 } from "./ante.ts";
 import { getDeck } from "./decks.ts";
-import { generateShop, type ShopState } from "./shop.ts";
-import { getJoker, sellValue } from "./jokers.ts";
+import { generateShop, levelUpHand, openPack, type ShopState } from "./shop.ts";
+import { packIdForKind, type OpeningPack, type PackKind } from "./packs.ts";
+import { JOKERS, getJoker, isScalingEffect, sellValue } from "./jokers.ts";
 import { GameError } from "./errors.ts";
-import { CONSUMABLE_BY_ID, type ConsumableInstance } from "./consumables.ts";
+import {
+  CONSUMABLE_BY_ID,
+  consumablesByKind,
+  type ConsumableDef,
+  type ConsumableEffect,
+  type ConsumableInstance,
+} from "./consumables.ts";
 import { VOUCHER_BY_ID } from "./vouchers.ts";
-import { TAG_BY_ID, type TagTrigger } from "./tags.ts";
-import { BOSS_EFFECT_BY_ID, rollBossEffect } from "./boss.ts";
+import { TAGS, TAG_BY_ID, type TagTrigger } from "./tags.ts";
+import { BOSS_EFFECT_BY_ID, effectiveBossTargetMult, rollBossEffect } from "./boss.ts";
 import {
   effectiveExtraDiscards,
   effectiveExtraHands,
@@ -49,7 +60,7 @@ import {
 
 export { GameError } from "./errors.ts";
 
-export type RunStatus = "selecting_blind" | "playing" | "shop" | "won_run" | "lost_run";
+export type RunStatus = "selecting_blind" | "playing" | "shop" | "pack_open" | "won_run" | "lost_run";
 
 export interface PlayResult {
   playedCardIds: string[];
@@ -86,6 +97,9 @@ export interface RunState {
   pendingRewardBreakdown: CashOutBreakdown | null;
   shop: ShopState | null;
 
+  /** Transient booster-pack state — non-null when status === "pack_open". */
+  openingPack: OpeningPack | null;
+
   // ----- extension slots (PET-67 foundation; empty-default until content streams populate) -----
   consumables: ConsumableInstance[];
   maxConsumables: number;
@@ -97,6 +111,18 @@ export interface RunState {
   discardsUsedThisBlind: number;
   /** Marker for gold-enhancement payout at round end (PET-75 reads this). */
   heldGoldRoundEnd: boolean;
+
+  /**
+   * Per-card modifier overlay persisted across shuffles.
+   * Keys may be card.id ("${faceCode}-${n}", per-instance) OR a bare face code ("KH", per-face).
+   * Tarot uses mutates run.hand directly + writes per-instance entries; future voucher / sticker
+   * hooks may write per-face. Optional so legacy persisted runs deserialize cleanly.
+   * (Reconcile the two key spaces in a follow-up — for now applyDeckEnhancements tries both.)
+   */
+  deckEnhancements?: Record<
+    string,
+    { enhancement?: CardEnhancement; edition?: CardEdition; seal?: CardSeal }
+  >;
 
   createdAt: number;
   updatedAt: number;
@@ -172,6 +198,8 @@ export interface RunStateDTO {
   tags: TagView[];
   bossEffect: BossEffectView | null;
   skipsThisRun: number;
+  /** Non-null while status === "pack_open" — the contents/picks the picker UI renders. */
+  openingPack: OpeningPack | null;
 }
 
 /** The single chokepoint that strips the hidden deck + composition before anything reaches the client. */
@@ -231,6 +259,7 @@ export function toRunDTO(run: RunState): RunStateDTO {
       return def ? { id: def.id, name: def.name, description: def.description } : null;
     })(),
     skipsThisRun: run.skipsThisRun,
+    openingPack: run.openingPack,
   };
 }
 
@@ -269,6 +298,8 @@ export function startRun(difficulty: Difficulty, userId: string, deckId = "stand
     jokerStates: {},
     discardsUsedThisBlind: 0,
     heldGoldRoundEnd: false,
+    deckEnhancements: {},
+    openingPack: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -280,23 +311,28 @@ export function startBlind(run: RunState, rng: () => number = Math.random): void
     throw new GameError(409, "bad_state", "Not selecting a blind");
   }
   const faces: Face[] = run.deckComposition.map(parseFace);
-  const deck = shuffle(instantiateDeck(faces), rng);
+  const decorated = decorateWithModifiers(instantiateDeck(faces), run.deckEnhancements);
+  const deck = shuffle(decorated, rng);
   run.hand = deck.splice(0, HAND_SIZE);
   run.deck = deck;
-  run.target = blindTarget(run.ante, run.blindIndex, run.difficulty);
+  // Roll the boss effect first so its modifiers fold into target / handsRemaining below.
+  run.currentBossEffect = blindKind(run.blindIndex) === "boss" ? rollBossEffect(run.ante, rng) : null;
+  const baseTarget = blindTarget(run.ante, run.blindIndex, run.difficulty);
+  run.target = Math.round(baseTarget * effectiveBossTargetMult(run.currentBossEffect));
   run.totalScore = 0;
   const tuning = DIFFICULTY_TUNING[run.difficulty];
   const perk = getDeck(run.deckId).perk;
   run.handsRemaining = tuning.hands + (perk.extraHands ?? 0) + effectiveExtraHands(run);
   run.discardsRemaining = tuning.discards + (perk.extraDiscards ?? 0) + effectiveExtraDiscards(run);
+  // The Needle: only 1 hand allowed this blind (applied after standard assignment).
+  if (run.currentBossEffect === "the_needle") run.handsRemaining = 1;
   run.lastPlay = null;
   run.pendingReward = null;
   run.pendingRewardBreakdown = null;
   run.discardsUsedThisBlind = 0;
-  run.currentBossEffect = blindKind(run.blindIndex) === "boss" ? rollBossEffect(run.ante, rng) : null;
   run.status = "playing";
   if (run.currentBossEffect) applyBossEffect(run, "start");
-  applyTags(run, "on_next_blind_start");
+  applyTags(run, "on_next_blind_start", rng);
 }
 
 /** Sell a joker for half its cost. Allowed while playing or shopping. */
@@ -311,6 +347,7 @@ export function sellJoker(run: RunState, jokerId: unknown): void {
   if (idx < 0) throw new GameError(404, "joker_not_found", "Joker not owned");
   run.money += sellValue(getJoker(jokerId).cost);
   run.jokers.splice(idx, 1);
+  delete run.jokerStates[jokerId];
 }
 
 /** Move a joker one slot left/right (order affects scoring). Edge moves are no-ops. */
@@ -339,7 +376,29 @@ function scoreCtx(run: RunState): ScoreContext {
     jokers: run.jokers,
     handsRemaining: run.handsRemaining,
     discardsRemaining: run.discardsRemaining,
+    discardsUsedThisBlind: run.discardsUsedThisBlind,
+    money: run.money,
+    jokerStates: run.jokerStates,
+    handHeld: run.hand,
   };
+}
+
+/**
+ * Apply per-face modifiers (enhancement/edition/seal) to freshly instantiated cards.
+ * For PET-75 the source map is empty by default; tarot/voucher hooks (PET-71/76) populate
+ * it so the same face code yields decorated cards on the next deal.
+ */
+function decorateWithModifiers(
+  deck: Card[],
+  modifiers: RunState["deckEnhancements"],
+): Card[] {
+  if (!modifiers || Object.keys(modifiers).length === 0) return deck;
+  return deck.map((card) => {
+    const code = faceCode({ rank: card.rank, suit: card.suit });
+    const mods = modifiers[code];
+    if (!mods) return card;
+    return { ...card, ...mods };
+  });
 }
 
 /** Non-mutating: validate the selection and return what it WOULD score (with this run's hand levels). */
@@ -363,13 +422,40 @@ export function playHand(
   const breakdown = scoreHand(selected, scoreCtx(run));
   run.totalScore += breakdown.score;
   run.handsRemaining -= 1;
+
+  // PET-75: lucky cards scored grant a deterministic +$1 EV (real Balatro is 1/15 × $20).
+  // Apply BEFORE removing them from hand so we count the actually-scored set.
+  const scoredIds = new Set(breakdown.scoringCardIds);
+  for (const c of selected) {
+    if (c.enhancement === "lucky" && scoredIds.has(c.id)) run.money += 1;
+  }
+
   removeFromHand(run, ids);
   draw(run, selected.length);
+
+  // Economy jokers pay out at end of each hand played (before the shop transition so the
+  // money shows on the shop screen). Tolerate unknown ids (tests stuff synthetic joker ids).
+  for (const jid of run.jokers) {
+    const def = JOKERS.find((j) => j.id === jid);
+    if (def?.effect.kind === "economy_per_hand_played") run.money += def.effect.dollars;
+  }
+  // The Hook (PET-83): at the end of each played hand, discard 2 random cards and redraw.
+  if (run.currentBossEffect === "the_hook") applyHookDiscard(run, rng);
 
   const result: PlayResult = { playedCardIds: ids, breakdown };
   run.lastPlay = result;
   checkTransition(run, rng);
   return result;
+}
+
+/** The Hook: remove up to 2 random cards from hand and draw replacements (capped by deck). */
+function applyHookDiscard(run: RunState, rng: () => number): void {
+  const toRemove = Math.min(2, run.hand.length);
+  for (let i = 0; i < toRemove; i++) {
+    const idx = Math.floor(rng() * run.hand.length);
+    run.hand.splice(idx, 1);
+  }
+  draw(run, toRemove);
 }
 
 export function discardCards(
@@ -395,6 +481,15 @@ export function discardCards(
 export function continueRun(run: RunState): void {
   if (run.status !== "shop") {
     throw new GameError(409, "bad_state", "Not at the cash-out screen");
+  }
+  // A blind was cleared (we got here from the cash-out screen) — bump scaling jokers.
+  for (const jid of run.jokers) {
+    const def = getJoker(jid);
+    if (isScalingEffect(def.effect)) {
+      const state = run.jokerStates[jid] ?? { counter: 0 };
+      state.counter += 1;
+      run.jokerStates[jid] = state;
+    }
   }
   run.pendingReward = null;
   run.pendingRewardBreakdown = null;
@@ -461,6 +556,15 @@ function ensurePlaying(run: RunState): void {
 function checkTransition(run: RunState, rng: () => number): void {
   if (run.totalScore >= run.target) {
     if (run.currentBossEffect) applyBossEffect(run, "end");
+    // PET-75: gold-enhancement payout — $3 per gold card still held in hand at round end.
+    let goldHeld = 0;
+    for (const c of run.hand) if (c.enhancement === "gold") goldHeld += 1;
+    if (goldHeld > 0) {
+      run.money += goldHeld * 3;
+      run.heldGoldRoundEnd = true;
+    } else {
+      run.heldGoldRoundEnd = false;
+    }
     const breakdown = cashOutMoney(
       run.blindIndex,
       run.handsRemaining,
@@ -472,7 +576,7 @@ function checkTransition(run: RunState, rng: () => number): void {
     run.money += run.pendingReward;
     run.status = "shop";
     run.shop = generateShop(run, rng);
-    applyTags(run, "on_shop_enter");
+    applyTags(run, "on_shop_enter", rng);
   } else if (run.handsRemaining <= 0) {
     run.status = "lost_run";
   } else if (run.hand.length === 0 && run.deck.length === 0) {
@@ -482,17 +586,61 @@ function checkTransition(run: RunState, rng: () => number): void {
 
 // ---- extension hooks (skeletons; no-ops when catalogs are empty) -----------
 
-/** Iterate run.tags and fire those matching `trigger`. No-op when TAGS is empty / unknown ids. */
-function applyTags(run: RunState, _trigger: TagTrigger): void {
+/** Iterate run.tags and fire those matching `trigger`. Tags fire once and are removed. */
+function applyTags(run: RunState, trigger: TagTrigger, rng: () => number = Math.random): void {
   if (run.tags.length === 0) return;
-  // Content stream PET-83 wires actual handlers here per TagEffect.kind.
-  // Resolved tags whose triggers don't match are skipped.
+  const remaining: string[] = [];
   for (const id of run.tags) {
     const def = TAG_BY_ID.get(id);
-    if (!def) continue;
-    if (def.trigger !== _trigger) continue;
-    // no-op handler skeleton: real effect handlers land with PET-83
+    if (!def) continue; // drop unknown ids
+    if (def.trigger !== trigger) {
+      remaining.push(id);
+      continue;
+    }
+    const effect = def.effect;
+    switch (effect.kind) {
+      case "money_add": {
+        run.money += effect.n;
+        break;
+      }
+      case "extra_joker_now": {
+        // Drop a random joker of the desired rarity into the run (capacity-respecting).
+        if (run.jokers.length >= effectiveMaxJokers(run)) {
+          remaining.push(id); // no room — keep the tag for later
+          continue;
+        }
+        const pool = JOKERS.filter((j) => j.rarity === effect.rarity);
+        if (pool.length === 0) break; // no joker for that rarity → consume tag silently
+        const pick = pool[Math.floor(rng() * pool.length)]!;
+        run.jokers.push(pick.id);
+        break;
+      }
+      case "free_pack": {
+        // PET-70 wires this: open a free pack (cost 0). Only one pack can be open at a time —
+        // if another tag already opened a pack this frame, keep this tag queued for next trigger.
+        if (run.openingPack) {
+          remaining.push(id);
+          continue;
+        }
+        const packId = packIdForKind(effect.packKind as PackKind);
+        const ret = run.status === "selecting_blind" ? "selecting_blind" : "shop";
+        openPack(run, packId, ret);
+        break;
+      }
+      case "mult_add_next_hand":
+      case "free_voucher": {
+        // Deferred effects — transient hand bonus + free voucher land in a later pass.
+        // Consume the tag rather than block — these were already "rolled" off the skip.
+        break;
+      }
+      default: {
+        const _exhaustive: never = effect;
+        void _exhaustive;
+        break;
+      }
+    }
   }
+  run.tags = remaining;
 }
 
 /** Apply the active boss effect for a given phase. No-op when no boss effect set. */
@@ -503,11 +651,12 @@ function applyBossEffect(run: RunState, _phase: "start" | "play" | "end"): void 
   // Content stream PET-78 wires phase-specific behavior off `def` here.
 }
 
-/** Use a consumable from a run slot. No-op skeleton until PET-71/72 populate CONSUMABLES. */
+/** Use a consumable from a run slot. PET-71 tarot effects; PET-72 spectral extends the switch. */
 export function useConsumable(
   run: RunState,
   instanceId: unknown,
-  _selectedCardIds?: unknown,
+  selectedCardIds?: unknown,
+  rng: () => number = Math.random,
 ): void {
   if (run.status !== "playing" && run.status !== "shop") {
     throw new GameError(409, "bad_state", "Can only use consumables while playing or shopping");
@@ -520,9 +669,346 @@ export function useConsumable(
   const inst = run.consumables[idx]!;
   const def = CONSUMABLE_BY_ID.get(inst.defId);
   if (!def) throw new GameError(400, "unimplemented", "Consumable effect not implemented");
-  // Content streams (PET-71 tarot / PET-72 spectral) interpret def.effect here, validate
-  // _selectedCardIds against def.needsSelection, then mutate run accordingly.
-  throw new GameError(400, "unimplemented", "Consumable effect not implemented");
+
+  // Resolve selection up front so each effect arm gets validated card refs (or an empty array
+  // for selection-less effects). Effects that need 2 ordered selections — e.g. Death's copy_card —
+  // read selectedCardIds directly so input order is preserved (resolveCardsFromHand keeps order).
+  const ids = resolveConsumableSelection(def, selectedCardIds);
+  const selectedCards = resolveCardsFromHand(run, ids);
+
+  applyConsumableEffect(run, def.effect, selectedCards, ids, rng);
+
+  // Consume the instance regardless of effect (noop / deferred still uses the slot).
+  run.consumables.splice(idx, 1);
+}
+
+/**
+ * Validate that the selection matches def.needsSelection (count + uniqueness + string ids).
+ * Source-of-cards validation (hand vs jokers) is delegated to the per-source resolver below.
+ */
+function resolveConsumableSelection(
+  def: ConsumableDef,
+  selectedCardIds: unknown,
+): string[] {
+  if (!def.needsSelection) {
+    if (selectedCardIds !== undefined) {
+      // Tolerate an empty array passed by clients that always send the field.
+      if (Array.isArray(selectedCardIds) && selectedCardIds.length === 0) return [];
+      if (Array.isArray(selectedCardIds))
+        throw new GameError(
+          400,
+          "invalid_selection",
+          "This consumable does not take a card selection",
+        );
+    }
+    return [];
+  }
+  const { min, max } = def.needsSelection;
+  if (!Array.isArray(selectedCardIds)) {
+    throw new GameError(400, "invalid_selection", "selectedCardIds must be an array");
+  }
+  if (selectedCardIds.length < min || selectedCardIds.length > max) {
+    throw new GameError(
+      400,
+      "invalid_selection",
+      `Select between ${min} and ${max} card${max === 1 ? "" : "s"}`,
+    );
+  }
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of selectedCardIds) {
+    if (typeof raw !== "string") {
+      throw new GameError(400, "invalid_selection", "card ids must be strings");
+    }
+    if (seen.has(raw)) {
+      throw new GameError(400, "invalid_selection", "duplicate card ids in selection");
+    }
+    seen.add(raw);
+    out.push(raw);
+  }
+  return out;
+}
+
+/** Look up each id in the current hand, preserving input order. Throws on missing ids. */
+function resolveCardsFromHand(run: RunState, ids: string[]): Card[] {
+  if (ids.length === 0) return [];
+  const byId = new Map(run.hand.map((c) => [c.id, c]));
+  return ids.map((id) => {
+    const card = byId.get(id);
+    if (!card) {
+      throw new GameError(400, "invalid_selection", `card ${id} is not in hand`);
+    }
+    return card;
+  });
+}
+
+function recordDeckMod(
+  run: RunState,
+  cardId: string,
+  patch: { enhancement?: CardEnhancement; edition?: CardEdition; seal?: CardSeal },
+): void {
+  if (!run.deckEnhancements) run.deckEnhancements = {};
+  run.deckEnhancements[cardId] = { ...(run.deckEnhancements[cardId] ?? {}), ...patch };
+}
+
+/** All standard poker HandTypes that a level-random-hand tarot can pick from. */
+const LEVELABLE_HANDS: HandType[] = [
+  "high_card",
+  "pair",
+  "two_pair",
+  "three_of_a_kind",
+  "straight",
+  "flush",
+  "full_house",
+  "four_of_a_kind",
+  "straight_flush",
+];
+
+function applyConsumableEffect(
+  run: RunState,
+  effect: ConsumableEffect,
+  selectedCards: Card[],
+  selectedIds: string[],
+  rng: () => number,
+): void {
+  switch (effect.kind) {
+    case "noop":
+      return;
+    case "enhance_selected": {
+      for (const card of selectedCards) {
+        card.enhancement = effect.enhancement;
+        recordDeckMod(run, card.id, { enhancement: effect.enhancement });
+      }
+      return;
+    }
+    case "edition_selected": {
+      for (const card of selectedCards) {
+        card.edition = effect.edition;
+        recordDeckMod(run, card.id, { edition: effect.edition });
+      }
+      return;
+    }
+    case "seal_selected": {
+      for (const card of selectedCards) {
+        card.seal = effect.seal;
+        recordDeckMod(run, card.id, { seal: effect.seal });
+      }
+      return;
+    }
+    case "destroy_selected": {
+      // Remove from hand AND from deckComposition (one face-code occurrence per destroyed card).
+      const toRemove = new Set(selectedIds);
+      run.hand = run.hand.filter((c) => !toRemove.has(c.id));
+      for (const card of selectedCards) {
+        const code = faceCode({ rank: card.rank, suit: card.suit });
+        const compIdx = run.deckComposition.indexOf(code);
+        if (compIdx >= 0) run.deckComposition.splice(compIdx, 1);
+        // Drop any persisted modifier for the destroyed instance — it's gone.
+        if (run.deckEnhancements) delete run.deckEnhancements[card.id];
+      }
+      return;
+    }
+    case "increase_rank_selected": {
+      for (const card of selectedCards) {
+        if (card.rank >= 13) continue; // cap at King — Aces and Kings are no-op
+        const oldCode = faceCode({ rank: card.rank, suit: card.suit });
+        card.rank = (card.rank + 1) as Rank;
+        const newCode = faceCode({ rank: card.rank, suit: card.suit });
+        // Mirror the rank bump into deckComposition so the next shuffle reflects it.
+        const compIdx = run.deckComposition.indexOf(oldCode);
+        if (compIdx >= 0) run.deckComposition[compIdx] = newCode;
+      }
+      return;
+    }
+    case "copy_card": {
+      // Death: first selected card becomes a copy of the second (rank+suit), keeping its own id
+      // and any modifiers on the *source* card carry over so the copy is visually identical.
+      if (selectedCards.length !== 2) {
+        throw new GameError(400, "invalid_selection", "Copy requires exactly 2 selected cards");
+      }
+      const [dst, src] = selectedCards as [Card, Card];
+      const oldCode = faceCode({ rank: dst.rank, suit: dst.suit });
+      dst.rank = src.rank;
+      dst.suit = src.suit;
+      if (src.enhancement) dst.enhancement = src.enhancement;
+      else delete dst.enhancement;
+      if (src.edition) dst.edition = src.edition;
+      else delete dst.edition;
+      if (src.seal) dst.seal = src.seal;
+      else delete dst.seal;
+      const newCode = faceCode({ rank: dst.rank, suit: dst.suit });
+      const compIdx = run.deckComposition.indexOf(oldCode);
+      if (compIdx >= 0) run.deckComposition[compIdx] = newCode;
+      return;
+    }
+    case "create_consumable": {
+      const pool = consumablesByKind(effect.kind2);
+      if (pool.length === 0) return; // empty catalog → silently no-op (e.g. spectral not shipped yet)
+      const cap = effectiveMaxConsumables(run);
+      for (let i = 0; i < effect.count; i++) {
+        if (run.consumables.length >= cap) return;
+        const pick = pool[Math.floor(rng() * pool.length)]!;
+        run.consumables.push({ id: crypto.randomUUID(), defId: pick.id });
+      }
+      return;
+    }
+    case "double_money": {
+      const gain = Math.min(run.money, effect.cap);
+      run.money += gain;
+      return;
+    }
+    case "sell_jokers_value": {
+      let total = 0;
+      for (const jid of run.jokers) total += sellValue(getJoker(jid).cost);
+      run.money += Math.min(total, effect.cap);
+      return;
+    }
+    case "level_random_hand": {
+      for (let i = 0; i < effect.n; i++) {
+        const pick = LEVELABLE_HANDS[Math.floor(rng() * LEVELABLE_HANDS.length)]!;
+        levelUpHand(run, pick);
+      }
+      return;
+    }
+
+    // ----- Spectral effects (PET-72) ---------------------------------------
+
+    case "destroy_random_cards": {
+      destroyRandomFromHand(run, effect.n, rng);
+      return;
+    }
+    case "destroy_random_jokers": {
+      const n = Math.min(effect.n, run.jokers.length);
+      for (let i = 0; i < n; i++) {
+        if (run.jokers.length === 0) return;
+        const idx = Math.floor(rng() * run.jokers.length);
+        run.jokers.splice(idx, 1);
+      }
+      return;
+    }
+    case "lose_all_money": {
+      run.money = 0;
+      return;
+    }
+    case "familiar": {
+      destroyRandomFromHand(run, effect.destroy, rng);
+      const faceRanks: Rank[] = [11, 12, 13];
+      for (let i = 0; i < effect.add; i++) {
+        addRandomCardToDeck(run, faceRanks, rng);
+      }
+      return;
+    }
+    case "grim": {
+      destroyRandomFromHand(run, effect.destroy, rng);
+      const aceRanks: Rank[] = [14];
+      for (let i = 0; i < effect.add; i++) {
+        addRandomCardToDeck(run, aceRanks, rng);
+      }
+      return;
+    }
+    case "incantation": {
+      destroyRandomFromHand(run, effect.destroy, rng);
+      const numbered: Rank[] = [2, 3, 4, 5, 6, 7, 8, 9];
+      for (let i = 0; i < effect.add; i++) {
+        addRandomCardToDeck(run, numbered, rng);
+      }
+      return;
+    }
+    case "suit_convert_hand": {
+      if (run.hand.length === 0) return;
+      const suits: Suit[] = ["clubs", "diamonds", "hearts", "spades"];
+      const pick = suits[Math.floor(rng() * suits.length)]!;
+      for (const card of run.hand) {
+        const oldCode = faceCode({ rank: card.rank, suit: card.suit });
+        card.suit = pick;
+        const newCode = faceCode({ rank: card.rank, suit: card.suit });
+        const compIdx = run.deckComposition.indexOf(oldCode);
+        if (compIdx >= 0) run.deckComposition[compIdx] = newCode;
+      }
+      return;
+    }
+    case "rank_convert_hand": {
+      if (run.hand.length === 0) return;
+      const ranks: Rank[] = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
+      const pick = ranks[Math.floor(rng() * ranks.length)]!;
+      for (const card of run.hand) {
+        const oldCode = faceCode({ rank: card.rank, suit: card.suit });
+        card.rank = pick;
+        const newCode = faceCode({ rank: card.rank, suit: card.suit });
+        const compIdx = run.deckComposition.indexOf(oldCode);
+        if (compIdx >= 0) run.deckComposition[compIdx] = newCode;
+      }
+      // TODO(PET-72): Ouija also subtracts 1 from hand size — deferred until HAND_SIZE is a per-run stat.
+      return;
+    }
+    case "immolate": {
+      destroyRandomFromHand(run, effect.destroy, rng);
+      run.money += effect.money;
+      return;
+    }
+    case "wraith": {
+      // Pick a random Rare joker the player doesn't already own; if none available, no-op the spawn.
+      const owned = new Set(run.jokers);
+      const rares = JOKERS.filter((j) => j.rarity === "rare" && !owned.has(j.id));
+      if (rares.length > 0 && run.jokers.length < effectiveMaxJokers(run)) {
+        const pick = rares[Math.floor(rng() * rares.length)]!;
+        run.jokers.push(pick.id);
+      }
+      // Downside still applies even if joker couldn't be granted (slots full / no eligible rare).
+      run.money = 0;
+      return;
+    }
+    case "ankh": {
+      if (run.jokers.length === 0) return;
+      const idx = Math.floor(rng() * run.jokers.length);
+      const keep = run.jokers[idx]!;
+      run.jokers = [keep, keep];
+      return;
+    }
+    case "cryptid_duplicate": {
+      // Selection guaranteed: needsSelection { min:1, max:1, from:"hand" } enforces 1 card.
+      if (selectedCards.length !== 1) return;
+      const src = selectedCards[0]!;
+      const code = faceCode({ rank: src.rank, suit: src.suit });
+      for (let i = 0; i < effect.copies; i++) {
+        // Append to deckComposition (persists across blinds).
+        run.deckComposition.push(code);
+        // Mint a fresh per-instance id so the in-hand clone is distinguishable.
+        const clone: Card = {
+          id: `${code}-c${run.deckComposition.length}-${Math.floor(rng() * 1e9)}`,
+          rank: src.rank,
+          suit: src.suit,
+        };
+        if (src.enhancement) clone.enhancement = src.enhancement;
+        if (src.edition) clone.edition = src.edition;
+        if (src.seal) clone.seal = src.seal;
+        run.hand.push(clone);
+      }
+      return;
+    }
+  }
+}
+
+/** Remove up to `n` random cards from the hand and their face-code occurrence from deckComposition. */
+function destroyRandomFromHand(run: RunState, n: number, rng: () => number): void {
+  const take = Math.min(n, run.hand.length);
+  for (let i = 0; i < take; i++) {
+    if (run.hand.length === 0) return;
+    const idx = Math.floor(rng() * run.hand.length);
+    const [card] = run.hand.splice(idx, 1) as [Card];
+    const code = faceCode({ rank: card.rank, suit: card.suit });
+    const compIdx = run.deckComposition.indexOf(code);
+    if (compIdx >= 0) run.deckComposition.splice(compIdx, 1);
+    if (run.deckEnhancements) delete run.deckEnhancements[card.id];
+  }
+}
+
+/** Append a random card (from the allowed ranks, any suit) to the deckComposition. */
+function addRandomCardToDeck(run: RunState, ranks: Rank[], rng: () => number): void {
+  const suits: Suit[] = ["clubs", "diamonds", "hearts", "spades"];
+  const rank = ranks[Math.floor(rng() * ranks.length)]!;
+  const suit = suits[Math.floor(rng() * suits.length)]!;
+  run.deckComposition.push(faceCode({ rank, suit }));
 }
 
 /** Sell a consumable for half its catalog cost. Mirrors sellJoker. */
@@ -542,8 +1028,8 @@ export function sellConsumable(run: RunState, instanceId: unknown): void {
   run.consumables.splice(idx, 1);
 }
 
-/** Skip the upcoming blind, awarding a tag (when TAGS is populated). No-op-friendly. */
-export function skipBlind(run: RunState, _rng: () => number = Math.random): void {
+/** Skip the upcoming blind: roll a tag, fire immediate-triggered effects, advance the ladder. */
+export function skipBlind(run: RunState, rng: () => number = Math.random): void {
   if (run.status !== "selecting_blind") {
     throw new GameError(409, "bad_state", "Can only skip from the blind-select screen");
   }
@@ -551,13 +1037,24 @@ export function skipBlind(run: RunState, _rng: () => number = Math.random): void
   if (blindKind(run.blindIndex) === "boss") {
     throw new GameError(400, "cannot_skip_boss", "The boss blind cannot be skipped");
   }
-  run.skipsThisRun += 1;
-  applyTags(run, "on_blind_skip");
-  // Advance to the next blind (content stream PET-83 awards the skip-tag reward).
-  if (run.blindIndex < 2) {
-    run.blindIndex += 1;
-    run.target = blindTarget(run.ante, run.blindIndex, run.difficulty);
+  // Roll one tag uniformly from the catalog (defensive against an empty catalog).
+  if (TAGS.length > 0) {
+    const tag = TAGS[Math.floor(rng() * TAGS.length)]!;
+    run.tags.push(tag.id);
   }
+  run.skipsThisRun += 1;
+  // Fire any "immediate" tags now (newly-rolled or carried-over).
+  applyTags(run, "immediate", rng);
+  // Advance: small → big, big → next ante's small. (Boss isn't skippable — guarded above.)
+  if (run.blindIndex === 0) {
+    run.blindIndex = 1;
+  } else if (run.blindIndex === 1) {
+    if (run.ante < MAX_ANTE) {
+      run.ante += 1;
+      run.blindIndex = 0;
+    }
+  }
+  run.target = blindTarget(run.ante, run.blindIndex, run.difficulty);
 }
 
 function draw(run: RunState, count: number): void {

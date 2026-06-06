@@ -81,6 +81,14 @@ export interface ScoreContext {
   jokers?: string[];
   handsRemaining?: number;
   discardsRemaining?: number;
+  /** Per-blind discard count (drives on_discard_chips). */
+  discardsUsedThisBlind?: number;
+  /** Current money (drives per_5_dollars_mult). */
+  money?: number;
+  /** Per-joker counter state (drives scaling_per_blind_*). */
+  jokerStates?: Record<string, { counter: number }>;
+  /** Cards still HELD in hand (not played) — steel enhancement reads this for x1.5 per steel held. */
+  handHeld?: Card[];
 }
 
 /** One joker's contribution during scoring — drives the play-resolution animation. */
@@ -102,17 +110,24 @@ export interface HandFeatures {
 }
 
 export function handFeatures(played: Card[]): HandFeatures {
+  // PET-75: stones don't contribute to shape detection; wilds count as any suit for flush.
+  const nonStone = played.filter((c) => c.enhancement !== "stone");
+  const nonStoneNonWild = nonStone.filter((c) => c.enhancement !== "wild");
+
   const counts = new Map<number, number>();
-  for (const c of played) counts.set(c.rank, (counts.get(c.rank) ?? 0) + 1);
+  for (const c of nonStone) counts.set(c.rank, (counts.get(c.rank) ?? 0) + 1);
   const countVals = [...counts.values()];
   const maxCount = countVals.length ? Math.max(...countVals) : 0;
   const pairRanks = countVals.filter((n) => n >= 2).length;
 
-  const flush = played.length === 5 && new Set(played.map((c) => c.suit)).size === 1;
+  const flush =
+    played.length === 5 &&
+    nonStone.length === 5 &&
+    new Set(nonStoneNonWild.map((c) => c.suit)).size <= 1;
 
   let straight = false;
-  if (played.length === 5 && counts.size === 5) {
-    const ranks = played.map((c) => c.rank).sort((a, b) => a - b);
+  if (played.length === 5 && nonStone.length === 5 && counts.size === 5) {
+    const ranks = nonStone.map((c) => c.rank).sort((a, b) => a - b);
     const min = ranks[0]!;
     const max = ranks[4]!;
     const isWheel =
@@ -150,20 +165,37 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
   const baseChips = base.chips + (level - 1) * per.chips;
   const baseMult = base.mult + (level - 1) * per.mult;
 
+  // Retrigger pre-pass: count owned jokers with retrigger_face so face cards score chips
+  // (1 + retriggerCount) times. Affects the scoring-card chip loop ONLY; the joker fold
+  // still adds an animation step for each retrigger joker but no chip delta there.
+  const jokerIds = ctx?.jokers ?? [];
+  let retriggerFaceCount = 0;
+  for (const jid of jokerIds) {
+    const def = JOKER_BY_ID.get(jid);
+    if (def?.effect.kind === "retrigger_face") retriggerFaceCount += 1;
+  }
+
   const cardById = new Map(played.map((c) => [c.id, c]));
   let scoringChips = 0;
   const scoredCards: Card[] = [];
   for (const id of scoringCardIds) {
     const card = cardById.get(id);
     if (card) {
-      scoringChips += chipValue(card.rank);
+      // Stone cards (PET-75): rank-less; +50 chips comes from the enhancement pre-pass, not chipValue.
+      // Face cards retriggered by PET-74's retrigger_face jokers score N+1 times.
+      if (card.enhancement !== "stone") {
+        const isFace = card.rank >= 11 && card.rank <= 13;
+        const mult = isFace ? 1 + retriggerFaceCount : 1;
+        scoringChips += chipValue(card.rank) * mult;
+      }
       scoredCards.push(card);
     }
   }
 
-  // Per-card modifier pre-pass (PET-67 hook). Enhancements/editions/seals contribute to
-  // chips/mult/xMult BEFORE the joker fold. With no card carrying any of these — current
-  // default — this loop is a no-op. Content stream PET-75 expands each switch arm.
+  // ---- per-card modifier pre-pass (PET-75) -----------------------------------------------
+  // Enhancements/editions/seals contribute to chips/mult/xMult BEFORE the joker fold so
+  // jokers still multiply on top. Glass × multipliers compound multiplicatively as 2^N
+  // (N = glass cards scored); poly editions compound as 1.5^M.
   let modChips = 0;
   let modMult = 0;
   let modXMult = 1;
@@ -171,29 +203,76 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
     if (card.enhancement) {
       switch (card.enhancement) {
         case "bonus":
-        case "mult":
-        case "wild":
-        case "glass":
-        case "steel":
-        case "stone":
-        case "gold":
-        case "lucky":
-          // PET-75 wires per-enhancement contributions here.
+          modChips += 30;
           break;
+        case "mult":
+          modMult += 4;
+          break;
+        case "wild":
+          // No scoring effect; wild only changes suit detection in the evaluator.
+          break;
+        case "glass":
+          modXMult *= 2;
+          // TODO PET-75: 1-in-4 glass-break at end of blind (currently no-op).
+          break;
+        case "steel":
+          // Steel only scores when HELD in hand, not when played. No-op here.
+          break;
+        case "stone":
+          modChips += 50;
+          break;
+        case "gold":
+          // Gold pays $3 at end-of-blind if HELD; the held-gold check fires in run.ts.
+          break;
+        case "lucky": {
+          // Deterministic simplification of Balatro RNG:
+          //   real: 1/5 chance of +20 mult, 1/15 chance of +$20 per lucky scored.
+          //   here: +4 mult per lucky (EV of 20 × 1/5). Money EV is granted in run.ts
+          //   on play resolution at +$1 per lucky scored (EV of 20 × 1/15 ≈ 1.33, rounded down to $1).
+          modMult += 4;
+          break;
+        }
       }
     }
     if (card.edition) {
       switch (card.edition) {
         case "foil":
+          modChips += 50;
+          break;
         case "holo":
+          modMult += 10;
+          break;
         case "poly":
+          modXMult *= 1.5;
+          break;
         case "negative":
-          // PET-75 wires per-edition contributions here.
+          // Negative editions only matter on jokers per Balatro — DEFER (no-op on cards).
           break;
       }
     }
-    // Seals (red/blue/gold/purple) act on the run, not on chips/mult — wired in run.ts hooks
-    // when content streams populate them. No-op here.
+    // ---- seals ---------------------------------------------------------------------------
+    // red: retriggers the card's chip contribution once. The base rank chips were added in
+    // the scoring-card loop above, so double them here (1× extra). Stones have no rank chips
+    // so a red seal on a stone retriggers the stone's +50 instead.
+    if (card.seal === "red") {
+      if (card.enhancement === "stone") {
+        modChips += 50;
+      } else {
+        modChips += chipValue(card.rank);
+      }
+    }
+    // TODO PET-75: blue (creates planet on end-of-round if held), gold ($3 at end-of-round
+    // if it scored), purple (creates tarot at end-of-round if discarded) — deferred.
+  }
+
+  // Steel cards HELD in hand (not played) — each multiplies the running mult by ×1.5.
+  // Apply AFTER the joker fold (Balatro's order), so track count now and fold in below.
+  let steelHeldCount = 0;
+  if (ctx?.handHeld) {
+    const playedIds = new Set(played.map((c) => c.id));
+    for (const c of ctx.handHeld) {
+      if (c.enhancement === "steel" && !playedIds.has(c.id)) steelHeldCount += 1;
+    }
   }
 
   // Fold jokers left-to-right onto the running totals. Order matters: ×Mult applies to the
@@ -201,7 +280,6 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
   let chips = baseChips + scoringChips + modChips;
   let mult = (baseMult + modMult) * modXMult;
   const jokerSteps: JokerStep[] = [];
-  const jokerIds = ctx?.jokers ?? [];
   if (jokerIds.length > 0) {
     const features = handFeatures(played);
     for (const jid of jokerIds) {
@@ -251,9 +329,40 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
         case "x_mult_contains":
           if (features[e.feature]) mult *= e.xMult;
           break;
+        case "retrigger_face":
+          // Chip impact already applied in the scoring-card pre-pass; no fold delta here.
+          break;
+        case "scaling_per_blind_mult": {
+          const counter = ctx?.jokerStates?.[jid]?.counter ?? 0;
+          mult += counter * e.mult;
+          break;
+        }
+        case "scaling_per_blind_chips": {
+          const counter = ctx?.jokerStates?.[jid]?.counter ?? 0;
+          chips += counter * e.chips;
+          break;
+        }
+        case "economy_per_hand_played":
+          // Money payout happens in run.ts after scoring; no chip/mult delta here.
+          break;
+        case "on_discard_chips":
+          chips += (ctx?.discardsUsedThisBlind ?? 0) * e.chips;
+          break;
+        case "flat_chips_and_mult":
+          chips += e.chips;
+          mult += e.mult;
+          break;
+        case "per_5_dollars_mult":
+          mult += Math.floor((ctx?.money ?? 0) / 5) * e.mult;
+          break;
       }
       if (e.kind === "x_mult_contains") {
         if (mult !== beforeMult) jokerSteps.push({ jokerId: jid, name: def.name, xMult: e.xMult });
+      } else if (e.kind === "retrigger_face") {
+        // Always log an animation step when this joker is owned and there were face cards scored.
+        if (scoredCards.some((c) => c.rank >= 11 && c.rank <= 13)) {
+          jokerSteps.push({ jokerId: jid, name: def.name });
+        }
       } else {
         const dChips = chips - beforeChips;
         const dMult = mult - beforeMult;
@@ -267,6 +376,12 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
         }
       }
     }
+  }
+
+  // Steel HELD: each steel card still in hand (not scored) multiplies mult by 1.5×, applied
+  // AFTER jokers so the steel bonus stacks on top of the joker fold (matches Balatro order).
+  if (steelHeldCount > 0) {
+    mult *= Math.pow(1.5, steelHeldCount);
   }
 
   return {
