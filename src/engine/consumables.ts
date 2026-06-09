@@ -33,6 +33,8 @@ export type ConsumableEffect =
   | { kind: "sell_jokers_value"; cap: number }
   | { kind: "increase_rank_selected"; max: number }
   | { kind: "copy_card" }
+  /** The Fool: spawn a fresh instance of the last Tarot/Planet consumable used this run. */
+  | { kind: "copy_last_consumable" }
   // ----- spectral additions (PET-72) -----
   /** Destroy N random cards from the hand (no selection). */
   | { kind: "destroy_random_cards"; n: number }
@@ -101,10 +103,10 @@ export const CONSUMABLES: ConsumableDef[] = [
   {
     id: "the_fool",
     name: "The Fool",
-    description: "Creates the last tarot/planet card used (DEFERRED)",
+    description: "Creates a copy of the last consumable used (Tarot or Planet).",
     kind: "tarot",
     cost: 3,
-    effect: { kind: "noop" },
+    effect: { kind: "copy_last_consumable" },
   },
   {
     id: "the_magician",

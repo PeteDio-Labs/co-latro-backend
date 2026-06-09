@@ -59,6 +59,7 @@ function bossRunBase(over: Partial<RunState> = {}): RunState {
     nextHandMultBonus: 0,
     freeVoucherPending: false,
     handSizeOffset: 0,
+    lastConsumableUsedDefId: null,
     openingPack: null,
     createdAt: 0,
     updatedAt: 0,
