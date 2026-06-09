@@ -325,4 +325,116 @@ describe("card modifier end-of-blind hooks (PET-75)", () => {
     expect(run.heldGoldRoundEnd).toBe(false);
     expect(run.money).toBe(5); // just the standard cash-out
   });
+
+  it("glass-break: rng < 0.25 destroys the played glass card from deckComposition", () => {
+    const glassK = withMod(cardOne("KH"), { enhancement: "glass" });
+    const run = runWith({
+      hand: [glassK, cardOne("KS"), cardOne("3D"), cardOne("7C"), cardOne("9S")],
+      target: 10000, // don't end the blind — keep run in "playing"
+      handsRemaining: 5,
+      deck: cards("2C 3C 4C 5C 6C"),
+    });
+    const before = run.deckComposition.length;
+    // rng() returns 0.1 → < 0.25 → glass card destroyed
+    playHand(run, ["KH", "KS"], () => 0.1);
+    expect(run.deckComposition.length).toBe(before - 1);
+    expect(run.deckComposition).not.toContain("KH");
+  });
+
+  it("glass-break: rng >= 0.25 survives — deckComposition unchanged", () => {
+    const glassK = withMod(cardOne("KH"), { enhancement: "glass" });
+    const run = runWith({
+      hand: [glassK, cardOne("KS"), cardOne("3D"), cardOne("7C"), cardOne("9S")],
+      target: 10000,
+      handsRemaining: 5,
+      deck: cards("2C 3C 4C 5C 6C"),
+    });
+    const before = run.deckComposition.slice();
+    playHand(run, ["KH", "KS"], () => 0.9); // no glass break
+    expect(run.deckComposition).toEqual(before);
+  });
+
+  it("glass-break: each glass card rolls independently (one breaks, one survives)", () => {
+    const glassA = withMod(cardOne("KH"), { enhancement: "glass" });
+    const glassB = withMod(cardOne("KS"), { enhancement: "glass" });
+    const run = runWith({
+      hand: [glassA, glassB, cardOne("3D"), cardOne("7C"), cardOne("9S")],
+      target: 10000,
+      handsRemaining: 5,
+      deck: cards("2C 3C 4C 5C 6C"),
+    });
+    // First roll 0.1 (< 0.25 → break KH); second roll 0.9 (>= 0.25 → KS survives).
+    const before = run.deckComposition.length;
+    playHand(run, ["KH", "KS"], seqRng(0.1, 0.9));
+    expect(run.deckComposition.length).toBe(before - 1);
+    expect(run.deckComposition).not.toContain("KH");
+    expect(run.deckComposition).toContain("KS");
+  });
+
+  it("blue seal: each blue-sealed card held at end of blind levels up the played hand type", () => {
+    const blueA = withMod(cardOne("3D"), { seal: "blue" });
+    const blueB = withMod(cardOne("7C"), { seal: "blue" });
+    const run = runWith({
+      hand: [cardOne("KH"), cardOne("KS"), blueA, blueB, cardOne("9S")],
+      target: 50,
+      blindIndex: 0,
+      handsRemaining: 3,
+    });
+    expect(run.handLevels.pair).toBe(1);
+    playHand(run, ["KH", "KS"]);
+    expect(run.status).toBe("shop");
+    // Two blue-sealed cards held → pair levels up by 2 (1 each).
+    expect(run.handLevels.pair).toBe(3);
+  });
+
+  it("gold seal: +$3 per gold-sealed card in the scoring set", () => {
+    const goldK = withMod(cardOne("KH"), { seal: "gold" });
+    const goldKicker = withMod(cardOne("3D"), { seal: "gold" }); // not in scoring set (pair only)
+    const run = runWith({
+      hand: [goldK, cardOne("KS"), goldKicker, cardOne("7C"), cardOne("9S")],
+      // Keep target unreachable AND leave hands so the run stays "playing".
+      target: 1_000_000,
+      handsRemaining: 5,
+      money: 0,
+      deck: cards("2C 3C 4C 5C 6C"),
+    });
+    playHand(run, ["KH", "KS", "3D", "7C", "9S"]);
+    expect(run.status).toBe("playing");
+    // pair scores KH+KS only; only goldK is in scoringCardIds → +$3.
+    expect(run.money).toBe(3);
+  });
+
+  it("purple seal: discarding a purple-sealed card creates a random tarot consumable", () => {
+    const purpleK = withMod(cardOne("KH"), { seal: "purple" });
+    const run = runWith({
+      hand: [purpleK, cardOne("KS"), cardOne("3D"), cardOne("7C"), cardOne("9S")],
+      deck: cards("2C 3C"),
+      discardsRemaining: 1,
+      maxConsumables: 2,
+    });
+    expect(run.consumables.length).toBe(0);
+    discardCards(run, ["KH"], () => 0);
+    expect(run.consumables.length).toBe(1);
+    // First tarot in catalog is "the_fool".
+    expect(run.consumables[0]!.defId).toBe("the_fool");
+  });
+
+  it("purple seal: respects max consumables — no spawn when full", () => {
+    const purpleK = withMod(cardOne("KH"), { seal: "purple" });
+    const run = runWith({
+      hand: [purpleK, cardOne("KS"), cardOne("3D"), cardOne("7C"), cardOne("9S")],
+      deck: cards("2C 3C"),
+      discardsRemaining: 1,
+      maxConsumables: 1,
+      consumables: [{ id: "x", defId: "the_fool" }], // already full
+    });
+    discardCards(run, ["KH"], () => 0);
+    expect(run.consumables.length).toBe(1); // unchanged
+  });
 });
+
+/** Deterministic RNG that emits a fixed sequence (loops if exhausted). */
+function seqRng(...values: number[]): () => number {
+  let i = 0;
+  return () => values[i++ % values.length]!;
+}
