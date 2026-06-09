@@ -22,6 +22,13 @@ function* effectsOf(run: RunState): Generator<VoucherEffect> {
 export function effectiveMaxJokers(run: RunState): number {
   let extra = 0;
   for (const e of effectsOf(run)) if (e.kind === "extra_joker_slot") extra += 1;
+  // Negative-editioned owned jokers each grant an extra slot (Balatro behavior).
+  if (run.jokerEditions) {
+    const owned = new Set(run.jokers);
+    for (const [jid, ed] of Object.entries(run.jokerEditions)) {
+      if (ed === "negative" && owned.has(jid)) extra += 1;
+    }
+  }
   return MAX_JOKERS + extra;
 }
 

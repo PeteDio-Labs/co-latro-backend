@@ -8,6 +8,8 @@ import {
   sellJoker,
   startBlind,
   startRun,
+  toRunDTO,
+  useConsumable,
   type RunState,
 } from "./run.ts";
 import { cards, withMod, card as cardOne } from "../testkit.ts";
@@ -44,6 +46,7 @@ function runWith(over: Partial<RunState> & { hand: RunState["hand"] }): RunState
     skipsThisRun: 0,
     currentBossEffect: null,
     jokerStates: {},
+    jokerEditions: {},
     discardsUsedThisBlind: 0,
     heldGoldRoundEnd: false,
     nextHandMultBonus: 0,
@@ -291,6 +294,109 @@ describe("jokers", () => {
     expect(run.jokerStates.green_joker?.counter).toBe(1);
     expect(run.jokerStates.square_joker?.counter).toBe(1);
     expect(run.jokerStates.joker).toBeUndefined(); // non-scaling joker untouched
+  });
+});
+
+describe("joker editions (PET-67)", () => {
+  // Build an rng that returns a fixed sequence of values, repeating the last.
+  function seqRng(...vals: number[]): () => number {
+    let i = 0;
+    return () => (i < vals.length ? vals[i++]! : vals[vals.length - 1]!);
+  }
+
+  it("startRun initializes jokerEditions to {}", () => {
+    const run = startRun("medium", "u1");
+    expect(run.jokerEditions).toEqual({});
+  });
+
+  it("sellJoker clears the jokerEditions entry", () => {
+    const run = runWith({
+      hand: cards("2C"),
+      jokers: ["joker"],
+      jokerEditions: { joker: "foil" },
+      money: 0,
+    });
+    sellJoker(run, "joker");
+    expect(run.jokerEditions.joker).toBeUndefined();
+  });
+
+  it("a Negative joker raises effectiveMaxJokers by 1 (DTO reflects 6 slots)", () => {
+    const run = runWith({
+      hand: cards("2C"),
+      jokers: ["joker"],
+      jokerEditions: { joker: "negative" },
+    });
+    expect(toRunDTO(run).maxJokers).toBe(6);
+  });
+
+  it("toRunDTO surfaces edition on the JokerView when set", () => {
+    const run = runWith({
+      hand: cards("2C"),
+      jokers: ["joker", "the_duo"],
+      jokerEditions: { joker: "poly" },
+    });
+    const dto = toRunDTO(run);
+    expect(dto.jokers[0]?.edition).toBe("poly");
+    expect(dto.jokers[1]?.edition).toBeUndefined();
+  });
+
+  it("Aura applies a random non-noop edition (seeded rng) to a random joker", () => {
+    // rng calls (in order): pick joker index, pick edition index.
+    // With 2 jokers + pool ["foil","holo","poly"]: 0.6 → idx 1 (the_duo), 0.0 → "foil".
+    const run = runWith({
+      hand: cards("2C"),
+      jokers: ["joker", "the_duo"],
+      status: "playing",
+    });
+    run.consumables.push({ id: "aura-1", defId: "aura" });
+    useConsumable(run, "aura-1", undefined, seqRng(0.6, 0.0));
+    expect(run.jokerEditions.the_duo).toBe("foil");
+    expect(run.jokerEditions.joker).toBeUndefined();
+    expect(run.consumables).toEqual([]);
+  });
+
+  it("Ectoplasm overwrites any existing edition with Negative", () => {
+    const run = runWith({
+      hand: cards("2C"),
+      jokers: ["joker"],
+      jokerEditions: { joker: "foil" },
+    });
+    run.consumables.push({ id: "ecto-1", defId: "ectoplasm" });
+    useConsumable(run, "ecto-1", undefined, seqRng(0));
+    expect(run.jokerEditions.joker).toBe("negative");
+  });
+
+  it("Hex with 3 jokers: keeps 1 with poly, destroys the others (states + editions cleared)", () => {
+    const run = runWith({
+      hand: cards("2C"),
+      jokers: ["joker", "green_joker", "the_duo"],
+      jokerStates: { green_joker: { counter: 5 } },
+      jokerEditions: { the_duo: "foil" },
+      money: 10,
+    });
+    run.consumables.push({ id: "hex-1", defId: "hex" });
+    // rng 0.4 → idx 1 (green_joker) is kept.
+    useConsumable(run, "hex-1", undefined, seqRng(0.4));
+    expect(run.jokers).toEqual(["green_joker"]);
+    expect(run.jokerEditions).toEqual({ green_joker: "poly" });
+    expect(run.jokerStates).toEqual({ green_joker: { counter: 5 } });
+    expect(run.money).toBe(10); // Hex does NOT zero money
+  });
+
+  it("Wheel of Fortune: rng < 0.25 applies edition, rng >= 0.25 is a no-op; both consume the slot", () => {
+    // Hit branch.
+    const hit = runWith({ hand: cards("2C"), jokers: ["joker"] });
+    hit.consumables.push({ id: "w1", defId: "the_wheel_of_fortune" });
+    // rng 0.1 → roll succeeds (< 0.25); 0.0 → joker idx 0; 0.0 → "foil".
+    useConsumable(hit, "w1", undefined, seqRng(0.1, 0.0, 0.0));
+    expect(hit.jokerEditions.joker).toBe("foil");
+    expect(hit.consumables).toEqual([]);
+    // Miss branch.
+    const miss = runWith({ hand: cards("2C"), jokers: ["joker"] });
+    miss.consumables.push({ id: "w2", defId: "the_wheel_of_fortune" });
+    useConsumable(miss, "w2", undefined, seqRng(0.9));
+    expect(miss.jokerEditions.joker).toBeUndefined();
+    expect(miss.consumables).toEqual([]); // tag consumed either way
   });
 });
 

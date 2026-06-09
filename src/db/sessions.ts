@@ -34,6 +34,8 @@ function normalizeRun(state: RunState): RunState {
   s.skipsThisRun ??= 0;
   s.currentBossEffect ??= null;
   s.jokerStates ??= {};
+  // PET-67 joker editions — older saves predate the per-joker edition overlay.
+  s.jokerEditions ??= {};
   s.discardsUsedThisBlind ??= 0;
   s.heldGoldRoundEnd ??= false;
   // PET-78 tag effects — older saves predate these transient run-state slots.
