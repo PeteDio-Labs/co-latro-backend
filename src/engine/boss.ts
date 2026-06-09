@@ -8,11 +8,15 @@
  *   - the_needle: handsRemaining clamped to 1 at blind start.
  *   - the_wall:   target multiplier +50% (1.5×) via effectiveBossTargetMult.
  *   - the_hook:   removes 2 random cards from hand after each played hand.
+ *   - the_wheel:  1-in-7 chance per dealt card → flipped face-down (applied on deal + redraw).
+ *   - the_mark:   every face card (J/Q/K, rank 11-13) dealt is flipped face-down.
  *
- * Description-only placeholders (mechanics deferred — need face-down card DTO state):
- *   - the_wheel: "1 in 7 cards drawn face-down"
- *   - the_mark:  "All face cards start face-down"
+ * Face-down cards are filtered out of the evaluator + scoring fold (see scoring.ts). The card
+ * is "revealed" (faceDown → false) on the way out as part of the played hand so the play
+ * animation can show its real rank/suit.
  */
+
+import type { Card } from "../cards.ts";
 
 export interface BossEffectDef {
   id: string;
@@ -67,4 +71,33 @@ export function effectiveBossTargetMult(currentBossEffect: string | null): numbe
   if (!currentBossEffect) return 1;
   const def = BOSS_EFFECT_BY_ID.get(currentBossEffect);
   return def?.targetMult ?? 1;
+}
+
+/**
+ * Mutate `cards` in place, flipping `faceDown = true` on those affected by the active boss effect:
+ *   - the_wheel: each card has a 1-in-7 chance (rng() < 1/7).
+ *   - the_mark:  every face card (rank 11-13).
+ * All other boss effects (or none) are no-ops. Cards already face-down are left untouched so
+ * a redraw doesn't accidentally re-reveal them.
+ */
+export function applyFaceDownEffect(
+  cards: Card[],
+  currentBossEffect: string | null,
+  rng: () => number,
+): void {
+  if (!currentBossEffect) return;
+  if (currentBossEffect === "the_wheel") {
+    for (const c of cards) {
+      if (c.faceDown) continue;
+      if (rng() < 1 / 7) c.faceDown = true;
+    }
+    return;
+  }
+  if (currentBossEffect === "the_mark") {
+    for (const c of cards) {
+      if (c.faceDown) continue;
+      if (c.rank >= 11 && c.rank <= 13) c.faceDown = true;
+    }
+    return;
+  }
 }
