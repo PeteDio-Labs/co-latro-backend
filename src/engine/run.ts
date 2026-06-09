@@ -148,11 +148,13 @@ export interface RunState {
    * until the discounted voucher is actually bought.
    */
   freeVoucherPending: boolean;
+  /**
    * Permanent run-long hand-size delta from consumables (e.g. Ouija -1, future buffs +1).
    * Voucher contributions live in vouchers + are folded by effectiveHandSize — they are
    * NOT mirrored here. Floored at 1 effective hand size to keep blinds playable.
    */
   handSizeOffset: number;
+  /**
    * Server-only tracker for The Fool (PET-71): the defId of the last consumable used this run
    * (excluding The Fool itself, so repeated Fool uses keep copying the same prior consumable).
    * Never surfaced to the client via toRunDTO — internal mechanism.
@@ -536,10 +538,9 @@ export function playHand(
   // Hook for boss effects that mutate selection/scoring before resolution (PET-78).
   if (run.currentBossEffect) applyBossEffect(run, "play");
 
-  const breakdown = scoreHand(selected, scoreCtx(run));
+  const breakdown = scoreHand(playedForScoring, scoreCtx(run));
   // PET-78 mult_add_next_hand: one-shot transient bonus, consumed by this hand.
   run.nextHandMultBonus = 0;
-  const breakdown = scoreHand(playedForScoring, scoreCtx(run));
   run.totalScore += breakdown.score;
   run.handsRemaining -= 1;
 
@@ -573,8 +574,7 @@ export function playHand(
   // Refill to the current effective hand size (NOT just selected.length) so consumables that
   // shrink/grow the hand mid-blind (e.g. Ouija -1) propagate on the next draw. Cards already
   // in hand stay — we never retroactively shrink the visible hand.
-  drawToHandSize(run);
-  draw(run, selected.length, rng);
+  drawToHandSize(run, rng);
 
   // Economy jokers pay out at end of each hand played (before the shop transition so the
   // money shows on the shop screen). Tolerate unknown ids (tests stuff synthetic joker ids).
@@ -598,8 +598,7 @@ function applyHookDiscard(run: RunState, rng: () => number): void {
     const idx = Math.floor(rng() * run.hand.length);
     run.hand.splice(idx, 1);
   }
-  drawToHandSize(run);
-  draw(run, toRemove, rng);
+  drawToHandSize(run, rng);
 }
 
 export function discardCards(
@@ -632,8 +631,7 @@ export function discardCards(
   }
 
   removeFromHand(run, ids);
-  drawToHandSize(run);
-  draw(run, selected.length, rng);
+  drawToHandSize(run, rng);
   checkTransition(run, rng); // only the softlock guard is reachable here (no score change)
 }
 
@@ -1358,10 +1356,10 @@ function draw(run: RunState, count: number, rng: () => number = Math.random): vo
  * If the hand is already at/above target (e.g. Cryptid just added clones), this is a no-op.
  * Used by playHand, discardCards, and The Hook — anywhere we replenish after cards leave.
  */
-function drawToHandSize(run: RunState): void {
+function drawToHandSize(run: RunState, rng: () => number = Math.random): void {
   const target = effectiveHandSize(run);
   const need = target - run.hand.length;
-  if (need > 0) draw(run, need);
+  if (need > 0) draw(run, need, rng);
 }
 
 function removeFromHand(run: RunState, ids: string[]): void {
