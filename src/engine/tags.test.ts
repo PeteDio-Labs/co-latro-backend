@@ -119,14 +119,24 @@ describe("skipBlind", () => {
     expect(() => skipBlind(run)).toThrow(GameError);
   });
 
-  it("from the big blind advances to the next ante's small blind", () => {
+  it("from the big blind advances to THIS ante's boss (never past it)", () => {
     const run = startRun("easy", "u1");
     run.blindIndex = 1; // big
-    skipBlind(run, seq(rngForTag("standard_tag")));
-    expect(run.ante).toBe(2);
-    expect(run.blindIndex).toBe(0);
-    // Easy ante-2 small target = round(800 × 1 × 0.6) = 480.
-    expect(run.target).toBe(480);
+    skipBlind(run, seq(rngForTag("investment_tag"))); // shop-trigger tag → no pack opens
+    expect(run.ante).toBe(1); // same ante — the boss still has to be played
+    expect(run.blindIndex).toBe(2); // boss
+    // Easy ante-1 boss target = round(300 × 2 × 0.6) = 360.
+    expect(run.target).toBe(360);
+    expect(run.status).toBe("selecting_blind");
+  });
+
+  it("cannot skip past the boss — skipping big then attempting another skip throws", () => {
+    const run = startRun("easy", "u1");
+    run.blindIndex = 1; // big
+    skipBlind(run, seq(rngForTag("investment_tag")));
+    expect(run.blindIndex).toBe(2); // now on the boss
+    // The boss is not skippable — a second skip is rejected.
+    expect(() => skipBlind(run, seq(rngForTag("investment_tag")))).toThrow(GameError);
   });
 
   it("only valid from the blind-select screen", () => {
@@ -219,6 +229,21 @@ describe("applyTags", () => {
     expect(run.jokers.length).toBe(1);
     const def = JOKERS.find((j) => j.id === run.jokers[0])!;
     expect(def.rarity).toBe("uncommon");
+  });
+
+  it("a free_pack tag rolled on skip opens a pack immediately (returns to blind-select)", () => {
+    const run = startRun("easy", "u1");
+    // Standard Tag → free Mega Standard Pack (trigger on_pack_open, dispatched in skipBlind).
+    skipBlind(run, seq(rngForTag("standard_tag")));
+    expect(run.status).toBe("pack_open");
+    expect(run.openingPack).not.toBeNull();
+    expect(run.openingPack!.packKind).toBe("standard");
+    // Opened from the blind-select screen → closing the pack returns there (not the shop).
+    expect(run.openingPack!.returnStatus).toBe("selecting_blind");
+    // The pack tag fired and was consumed.
+    expect(run.tags).toEqual([]);
+    // The blind still advanced underneath the open pack (small → big).
+    expect(run.blindIndex).toBe(1);
   });
 
 });
