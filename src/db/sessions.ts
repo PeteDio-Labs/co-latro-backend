@@ -34,8 +34,17 @@ function normalizeRun(state: RunState): RunState {
   s.skipsThisRun ??= 0;
   s.currentBossEffect ??= null;
   s.jokerStates ??= {};
+  // PET-67 joker editions — older saves predate the per-joker edition overlay.
+  s.jokerEditions ??= {};
   s.discardsUsedThisBlind ??= 0;
   s.heldGoldRoundEnd ??= false;
+  // PET-78 tag effects — older saves predate these transient run-state slots.
+  s.nextHandMultBonus ??= 0;
+  s.freeVoucherPending ??= false;
+  // PET-67: per-run hand size offset (Ouija -1, future buffs +1). Older saves predate this.
+  s.handSizeOffset ??= 0;
+  // PET-71 The Fool tracker — older saves predate this field; default null = no copy on first use.
+  s.lastConsumableUsedDefId ??= null;
   // PET-70 pack flow — older saves predate the openingPack field.
   s.openingPack ??= null;
   // PET-75 card modifier overlay — older saves predate this.

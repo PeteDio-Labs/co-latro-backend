@@ -134,3 +134,57 @@ describe("scoreHand — card modifier scoring (PET-75)", () => {
     expect(scoreHand(hand).score).toBe(80);
   });
 });
+
+describe("scoreHand — face-down cards (PET-83)", () => {
+  it("all played cards face-down → high_card scored at 0", () => {
+    const hand = [
+      { ...card("KH"), faceDown: true },
+      { ...card("KS"), faceDown: true },
+    ];
+    const s = scoreHand(hand);
+    expect(s.handType).toBe("high_card");
+    expect(s.score).toBe(0);
+    expect(s.scoringCardIds).toEqual([]);
+    expect(s.baseChips).toBe(0);
+    expect(s.baseMult).toBe(0);
+  });
+
+  it("mixed: face-down cards are excluded from the evaluator + chip fold", () => {
+    // Pair of K's where one K is face-down — only the visible KS counts → degrades to
+    // high_card on KS alone (no other visible cards).
+    const hand = [
+      { ...card("KH"), faceDown: true },
+      card("KS"),
+    ];
+    const s = scoreHand(hand);
+    expect(s.handType).toBe("high_card");
+    // high_card on KS: (5 base + 10 chip) × 1 = 15
+    expect(s.score).toBe(15);
+    expect(s.scoringCardIds).toEqual(["KS"]);
+  });
+
+  it("face-down card enhancement / edition / seal contribute nothing", () => {
+    // A face-down KH with a +30 bonus enhancement + foil edition should not add anything.
+    const hand = [
+      { ...withMod(card("KH"), { enhancement: "bonus", edition: "foil", seal: "red" }), faceDown: true },
+      card("KS"), card("3D"), card("7C"), card("9S"),
+    ];
+    const s = scoreHand(hand);
+    // Degrades to pair-of-… wait, only ONE K visible → high_card on the highest visible.
+    expect(s.handType).toBe("high_card");
+    // Best visible is KS (10 chip): (5 + 10) × 1 = 15.
+    expect(s.score).toBe(15);
+  });
+
+  it("face-down cards do not trigger feature-based jokers", () => {
+    // Build a "would-be" flush where one heart is face-down — feature.flush should be false.
+    const hand = [
+      { ...card("2H"), faceDown: true },
+      card("5H"), card("9H"), card("JH"), card("KH"),
+    ];
+    const s = scoreHand(hand);
+    // Only 4 visible same-suit cards → not a flush, not a straight → high_card on KH.
+    expect(s.handType).toBe("high_card");
+    expect(s.score).toBe(15); // (5 + 10) × 1
+  });
+});

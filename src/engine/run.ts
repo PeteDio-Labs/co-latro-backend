@@ -17,7 +17,7 @@ import {
   type Rank,
   type Suit,
 } from "../cards.ts";
-import { HAND_SIZE, MAX_SELECT, type Difficulty } from "../difficulty.ts";
+import { MAX_SELECT, type Difficulty } from "../difficulty.ts";
 import {
   defaultHandLevels,
   scoreHand,
@@ -37,7 +37,13 @@ import {
 } from "./ante.ts";
 import { getDeck } from "./decks.ts";
 import { generateShop, levelUpHand, openPack, type ShopState } from "./shop.ts";
-import { packIdForKind, type OpeningPack, type PackKind } from "./packs.ts";
+import {
+  PACK_BY_ID,
+  packIdForKind,
+  type OpeningPack,
+  type PackChoiceItem,
+  type PackKind,
+} from "./packs.ts";
 import { JOKERS, getJoker, isScalingEffect, sellValue } from "./jokers.ts";
 import { GameError } from "./errors.ts";
 import {
@@ -49,10 +55,16 @@ import {
 } from "./consumables.ts";
 import { VOUCHER_BY_ID } from "./vouchers.ts";
 import { TAGS, TAG_BY_ID, type TagTrigger } from "./tags.ts";
-import { BOSS_EFFECT_BY_ID, effectiveBossTargetMult, rollBossEffect } from "./boss.ts";
+import {
+  BOSS_EFFECT_BY_ID,
+  applyFaceDownEffect,
+  effectiveBossTargetMult,
+  rollBossEffect,
+} from "./boss.ts";
 import {
   effectiveExtraDiscards,
   effectiveExtraHands,
+  effectiveHandSize,
   effectiveInterestCap,
   effectiveMaxConsumables,
   effectiveMaxJokers,
@@ -64,6 +76,12 @@ export type RunStatus = "selecting_blind" | "playing" | "shop" | "pack_open" | "
 
 export interface PlayResult {
   playedCardIds: string[];
+  /**
+   * The played cards, in selection order, with any face-down overlay flipped off
+   * (PET-83 — boss-effect cards are revealed at score time so the FE animation
+   * can show what they actually were).
+   */
+  playedCards: Card[];
   breakdown: ScoreBreakdown;
 }
 
@@ -108,16 +126,47 @@ export interface RunState {
   skipsThisRun: number;
   currentBossEffect: string | null;
   jokerStates: Record<string, { counter: number }>;
+  /**
+   * Per-joker edition overlay. Keyed by joker catalog id (the same string used in run.jokers[]).
+   * Editions affect scoring (foil +50 chips, holo +10 mult, poly ×1.5 mult) or slots
+   * (negative — adds an extra slot, no scoring effect). Optional so legacy persisted runs
+   * deserialize cleanly; backfilled to {} by sessions.ts.
+   */
+  jokerEditions: Record<string, "foil" | "holo" | "poly" | "negative">;
   discardsUsedThisBlind: number;
   /** Marker for gold-enhancement payout at round end (PET-75 reads this). */
   heldGoldRoundEnd: boolean;
+  /**
+   * Transient +mult bonus consumed by the next played hand (PET-78 mult_add_next_hand tag).
+   * Reset to 0 after each playHand scoring pass — applies to the very next hand only.
+   * Multiple tags stack additively before consumption.
+   */
+  nextHandMultBonus: number;
+  /**
+   * When true, the next voucher rolled in a shop is free (cost 0).
+   * Set by the PET-78 free_voucher tag; persists through rerolls (Balatro behavior)
+   * until the discounted voucher is actually bought.
+   */
+  freeVoucherPending: boolean;
+  /**
+   * Permanent run-long hand-size delta from consumables (e.g. Ouija -1, future buffs +1).
+   * Voucher contributions live in vouchers + are folded by effectiveHandSize — they are
+   * NOT mirrored here. Floored at 1 effective hand size to keep blinds playable.
+   */
+  handSizeOffset: number;
+  /**
+   * Server-only tracker for The Fool (PET-71): the defId of the last consumable used this run
+   * (excluding The Fool itself, so repeated Fool uses keep copying the same prior consumable).
+   * Never surfaced to the client via toRunDTO — internal mechanism.
+   */
+  lastConsumableUsedDefId: string | null;
 
   /**
-   * Per-card modifier overlay persisted across shuffles.
-   * Keys may be card.id ("${faceCode}-${n}", per-instance) OR a bare face code ("KH", per-face).
-   * Tarot uses mutates run.hand directly + writes per-instance entries; future voucher / sticker
-   * hooks may write per-face. Optional so legacy persisted runs deserialize cleanly.
-   * (Reconcile the two key spaces in a follow-up — for now applyDeckEnhancements tries both.)
+   * Per-FACE modifier overlay persisted across shuffles. Keys are face codes ("KH"), so every
+   * instance of that face inherits the modifier on the next deal — Balatro's per-instance
+   * semantic is approximated. The "two KH but only enhance one" edge case is intentionally lost
+   * in prealpha; a future refactor would carry instance ids in deckComposition.
+   * Optional so legacy persisted runs deserialize cleanly.
    */
   deckEnhancements?: Record<
     string,
@@ -135,6 +184,8 @@ export interface JokerView {
   description: string;
   cost: number;
   sellValue: number;
+  /** Per-joker edition (frontend renders via .card-foil/.card-holo/.card-poly classes). */
+  edition?: "foil" | "holo" | "poly" | "negative";
 }
 
 /** A consumable as the client sees it (resolved from CONSUMABLE_BY_ID). */
@@ -144,6 +195,10 @@ export interface ConsumableView {
   name: string;
   description: string;
   kind: "tarot" | "planet" | "spectral";
+  /** Card-selection requirement (min/max + source pool). Null = fire-immediately.
+   *  The FE gates its "pick N then Confirm" flow on this; without it, selection
+   *  consumables fire with an empty selection and the engine rejects them. */
+  needsSelection: { min: number; max: number; from: "hand" | "owned_jokers" } | null;
 }
 
 export interface VoucherView {
@@ -162,6 +217,25 @@ export interface BossEffectView {
   id: string;
   name: string;
   description: string;
+}
+
+/** One choice the pack picker renders. `id`/`name`/`description` come straight off the
+ *  internal PackChoiceItem; the FE supplies icon/badge fallbacks per family. */
+export interface PackOptionView {
+  id: string;
+  name: string;
+  description: string;
+}
+
+/** Client-safe view of an opening booster pack. Maps the internal `OpeningPack`
+ *  (contents/remainingPicks/packKind) onto the shape the picker UI consumes
+ *  (options/picksAllowed/family). `returnStatus`/`size` are server-only. */
+export interface OpeningPackDTO {
+  packId: string;
+  name: string;
+  family: PackKind; // identical union to the FE's PackFamily
+  picksAllowed: number;
+  options: PackOptionView[];
 }
 
 /** Client-safe view: everything the UI needs, minus the hidden deck/composition. */
@@ -199,7 +273,23 @@ export interface RunStateDTO {
   bossEffect: BossEffectView | null;
   skipsThisRun: number;
   /** Non-null while status === "pack_open" — the contents/picks the picker UI renders. */
-  openingPack: OpeningPack | null;
+  openingPack: OpeningPackDTO | null;
+}
+
+/** Map the internal OpeningPack onto the picker's wire shape (or null when no pack is open). */
+function toOpeningPackDTO(opening: OpeningPack | null): OpeningPackDTO | null {
+  if (!opening) return null;
+  return {
+    packId: opening.packId,
+    name: PACK_BY_ID.get(opening.packId)?.name ?? opening.packId,
+    family: opening.packKind,
+    picksAllowed: opening.remainingPicks,
+    options: opening.contents.map((c: PackChoiceItem) => ({
+      id: c.id,
+      name: c.name,
+      description: c.description,
+    })),
+  };
 }
 
 /** The single chokepoint that strips the hidden deck + composition before anything reaches the client. */
@@ -217,12 +307,14 @@ export function toRunDTO(run: RunState): RunStateDTO {
     handLevels: run.handLevels,
     jokers: run.jokers.map((id) => {
       const def = getJoker(id);
+      const edition = run.jokerEditions?.[id];
       return {
         id: def.id,
         name: def.name,
         description: def.description,
         cost: def.cost,
         sellValue: sellValue(def.cost),
+        ...(edition ? { edition } : {}),
       };
     }),
     maxJokers: effectiveMaxJokers(run),
@@ -242,7 +334,16 @@ export function toRunDTO(run: RunState): RunStateDTO {
     consumables: run.consumables.flatMap((c) => {
       const def = CONSUMABLE_BY_ID.get(c.defId);
       if (!def) return []; // skip unknown defIds rather than crash the DTO
-      return [{ id: c.id, defId: def.id, name: def.name, description: def.description, kind: def.kind }];
+      return [
+        {
+          id: c.id,
+          defId: def.id,
+          name: def.name,
+          description: def.description,
+          kind: def.kind,
+          needsSelection: def.needsSelection ?? null,
+        },
+      ];
     }),
     maxConsumables: effectiveMaxConsumables(run),
     vouchers: run.vouchers.flatMap((id) => {
@@ -259,7 +360,7 @@ export function toRunDTO(run: RunState): RunStateDTO {
       return def ? { id: def.id, name: def.name, description: def.description } : null;
     })(),
     skipsThisRun: run.skipsThisRun,
-    openingPack: run.openingPack,
+    openingPack: toOpeningPackDTO(run.openingPack),
   };
 }
 
@@ -296,8 +397,13 @@ export function startRun(difficulty: Difficulty, userId: string, deckId = "stand
     skipsThisRun: 0,
     currentBossEffect: null,
     jokerStates: {},
+    jokerEditions: {},
     discardsUsedThisBlind: 0,
     heldGoldRoundEnd: false,
+    nextHandMultBonus: 0,
+    freeVoucherPending: false,
+    handSizeOffset: 0,
+    lastConsumableUsedDefId: null,
     deckEnhancements: {},
     openingPack: null,
     createdAt: now,
@@ -313,7 +419,7 @@ export function startBlind(run: RunState, rng: () => number = Math.random): void
   const faces: Face[] = run.deckComposition.map(parseFace);
   const decorated = decorateWithModifiers(instantiateDeck(faces), run.deckEnhancements);
   const deck = shuffle(decorated, rng);
-  run.hand = deck.splice(0, HAND_SIZE);
+  run.hand = deck.splice(0, effectiveHandSize(run));
   run.deck = deck;
   // Roll the boss effect first so its modifiers fold into target / handsRemaining below.
   run.currentBossEffect = blindKind(run.blindIndex) === "boss" ? rollBossEffect(run.ante, rng) : null;
@@ -332,6 +438,9 @@ export function startBlind(run: RunState, rng: () => number = Math.random): void
   run.discardsUsedThisBlind = 0;
   run.status = "playing";
   if (run.currentBossEffect) applyBossEffect(run, "start");
+  // PET-83: Wheel/Mark flip a subset of the freshly-dealt hand face-down. Run after
+  // applyBossEffect (which is currently a content-stream hook) but before tags fire.
+  applyFaceDownEffect(run.hand, run.currentBossEffect, rng);
   applyTags(run, "on_next_blind_start", rng);
 }
 
@@ -348,6 +457,7 @@ export function sellJoker(run: RunState, jokerId: unknown): void {
   run.money += sellValue(getJoker(jokerId).cost);
   run.jokers.splice(idx, 1);
   delete run.jokerStates[jokerId];
+  delete run.jokerEditions[jokerId];
 }
 
 /** Move a joker one slot left/right (order affects scoring). Edge moves are no-ops. */
@@ -379,7 +489,9 @@ function scoreCtx(run: RunState): ScoreContext {
     discardsUsedThisBlind: run.discardsUsedThisBlind,
     money: run.money,
     jokerStates: run.jokerStates,
+    jokerEditions: run.jokerEditions,
     handHeld: run.hand,
+    nextHandMultBonus: run.nextHandMultBonus,
   };
 }
 
@@ -416,10 +528,19 @@ export function playHand(
   const selected = resolveSelection(run, selectedIds);
   const ids = selected.map((c) => c.id);
 
+  // PET-83: face-down cards are revealed at play time. Flip them BEFORE scoring so the
+  // played-card list in lastPlay shows real ranks/suits to the FE animation, but they
+  // remain excluded from chips/mult via scoreHand's pre-filter on the persisted overlay.
+  // We capture which were face-down so scoring uses a faceDown-tagged copy.
+  const playedForScoring = selected.map((c) => ({ ...c }));
+  for (const c of selected) if (c.faceDown) c.faceDown = false;
+
   // Hook for boss effects that mutate selection/scoring before resolution (PET-78).
   if (run.currentBossEffect) applyBossEffect(run, "play");
 
-  const breakdown = scoreHand(selected, scoreCtx(run));
+  const breakdown = scoreHand(playedForScoring, scoreCtx(run));
+  // PET-78 mult_add_next_hand: one-shot transient bonus, consumed by this hand.
+  run.nextHandMultBonus = 0;
   run.totalScore += breakdown.score;
   run.handsRemaining -= 1;
 
@@ -430,8 +551,30 @@ export function playHand(
     if (c.enhancement === "lucky" && scoredIds.has(c.id)) run.money += 1;
   }
 
+  // PET-75: gold-SEAL payout — +$3 per gold-sealed card that was in the scoring set.
+  // (Distinct from gold-ENHANCEMENT which pays at end-of-blind if held — see checkTransition.)
+  for (const c of selected) {
+    if (c.seal === "gold" && scoredIds.has(c.id)) run.money += 3;
+  }
+
+  // PET-75: glass-break — each scored glass card has a 1/4 chance to destroy itself from
+  // deckComposition. The card is also leaving the hand below (it was played), so the only
+  // additional bookkeeping is removing one matching face from deckComposition + dropping
+  // any persisted per-instance modifier. Independent roll per glass card.
+  for (const c of selected) {
+    if (c.enhancement === "glass" && scoredIds.has(c.id) && rng() < 0.25) {
+      const code = faceCode({ rank: c.rank, suit: c.suit });
+      const compIdx = run.deckComposition.indexOf(code);
+      if (compIdx >= 0) run.deckComposition.splice(compIdx, 1);
+      if (run.deckEnhancements) delete run.deckEnhancements[c.id];
+    }
+  }
+
   removeFromHand(run, ids);
-  draw(run, selected.length);
+  // Refill to the current effective hand size (NOT just selected.length) so consumables that
+  // shrink/grow the hand mid-blind (e.g. Ouija -1) propagate on the next draw. Cards already
+  // in hand stay — we never retroactively shrink the visible hand.
+  drawToHandSize(run, rng);
 
   // Economy jokers pay out at end of each hand played (before the shop transition so the
   // money shows on the shop screen). Tolerate unknown ids (tests stuff synthetic joker ids).
@@ -442,7 +585,7 @@ export function playHand(
   // The Hook (PET-83): at the end of each played hand, discard 2 random cards and redraw.
   if (run.currentBossEffect === "the_hook") applyHookDiscard(run, rng);
 
-  const result: PlayResult = { playedCardIds: ids, breakdown };
+  const result: PlayResult = { playedCardIds: ids, playedCards: selected, breakdown };
   run.lastPlay = result;
   checkTransition(run, rng);
   return result;
@@ -455,7 +598,7 @@ function applyHookDiscard(run: RunState, rng: () => number): void {
     const idx = Math.floor(rng() * run.hand.length);
     run.hand.splice(idx, 1);
   }
-  draw(run, toRemove);
+  drawToHandSize(run, rng);
 }
 
 export function discardCards(
@@ -472,8 +615,23 @@ export function discardCards(
 
   run.discardsRemaining -= 1;
   run.discardsUsedThisBlind += 1;
+
+  // PET-75: purple seal — each discarded purple-sealed card creates a random Tarot consumable
+  // (capacity-respecting; if the slots are full, skip silently). Roll happens before the cards
+  // leave the hand so the seal-bearing card is still inspectable.
+  const tarotPool = consumablesByKind("tarot");
+  if (tarotPool.length > 0) {
+    const cap = effectiveMaxConsumables(run);
+    for (const c of selected) {
+      if (c.seal !== "purple") continue;
+      if (run.consumables.length >= cap) break;
+      const pick = tarotPool[Math.floor(rng() * tarotPool.length)]!;
+      run.consumables.push({ id: crypto.randomUUID(), defId: pick.id });
+    }
+  }
+
   removeFromHand(run, ids);
-  draw(run, selected.length);
+  drawToHandSize(run, rng);
   checkTransition(run, rng); // only the softlock guard is reachable here (no score change)
 }
 
@@ -565,6 +723,15 @@ function checkTransition(run: RunState, rng: () => number): void {
     } else {
       run.heldGoldRoundEnd = false;
     }
+    // PET-75: blue seal — each blue-sealed card held in hand at end of blind levels up the
+    // most-recently-scored hand type by 1 (simplification of Balatro's "create planet card").
+    // No-op if nothing was played this blind (lastPlay null), which can happen on softlock.
+    if (run.lastPlay) {
+      const handType = run.lastPlay.breakdown.handType;
+      for (const c of run.hand) {
+        if (c.seal === "blue") levelUpHand(run, handType);
+      }
+    }
     const breakdown = cashOutMoney(
       run.blindIndex,
       run.handsRemaining,
@@ -575,8 +742,11 @@ function checkTransition(run: RunState, rng: () => number): void {
     run.pendingReward = breakdown.blindBase + breakdown.handsBonus + breakdown.interest;
     run.money += run.pendingReward;
     run.status = "shop";
-    run.shop = generateShop(run, rng);
+    // Fire on_shop_enter tags BEFORE generating the shop so flags they set
+    // (free_voucher → zero-cost voucher slot, extra_joker_now → joker excluded
+    // from the shop's joker pool) take effect on this shop's roll.
     applyTags(run, "on_shop_enter", rng);
+    run.shop = generateShop(run, rng);
   } else if (run.handsRemaining <= 0) {
     run.status = "lost_run";
   } else if (run.hand.length === 0 && run.deck.length === 0) {
@@ -627,10 +797,14 @@ function applyTags(run: RunState, trigger: TagTrigger, rng: () => number = Math.
         openPack(run, packId, ret);
         break;
       }
-      case "mult_add_next_hand":
+      case "mult_add_next_hand": {
+        // Transient +mult bonus consumed by the next played hand. Multiple tags stack.
+        run.nextHandMultBonus += effect.n;
+        break;
+      }
       case "free_voucher": {
-        // Deferred effects — transient hand bonus + free voucher land in a later pass.
-        // Consume the tag rather than block — these were already "rolled" off the skip.
+        // Next shop's voucher slot rolls free (cost 0). Persists through reroll until bought.
+        run.freeVoucherPending = true;
         break;
       }
       default: {
@@ -676,10 +850,20 @@ export function useConsumable(
   const ids = resolveConsumableSelection(def, selectedCardIds);
   const selectedCards = resolveCardsFromHand(run, ids);
 
+  // Capture pre-effect, so The Fool's handler sees the prior tracker (its own use doesn't shadow it).
+  const usedDefId = def.id;
+
   applyConsumableEffect(run, def.effect, selectedCards, ids, rng);
 
   // Consume the instance regardless of effect (noop / deferred still uses the slot).
   run.consumables.splice(idx, 1);
+
+  // Update The Fool's tracker AFTER the effect resolves and the slot is freed. Skip when the
+  // used consumable IS The Fool — that's how "use Fool twice in a row" keeps copying the same
+  // prior consumable (the tracker isn't overwritten by Fool itself).
+  if (usedDefId !== "the_fool") {
+    run.lastConsumableUsedDefId = usedDefId;
+  }
 }
 
 /**
@@ -742,13 +926,20 @@ function resolveCardsFromHand(run: RunState, ids: string[]): Card[] {
   });
 }
 
+/**
+ * Persist a modifier patch onto the deck overlay, keyed by FACE CODE (not card.id).
+ * Per-instance ids regenerate on every shuffle (instantiateDeck), so keying by id silently
+ * drops the modifier on the next blind — keying by face means every future instance of that
+ * face inherits it. See the deckEnhancements field doc for the prealpha trade-off.
+ */
 function recordDeckMod(
   run: RunState,
-  cardId: string,
+  card: Card,
   patch: { enhancement?: CardEnhancement; edition?: CardEdition; seal?: CardSeal },
 ): void {
   if (!run.deckEnhancements) run.deckEnhancements = {};
-  run.deckEnhancements[cardId] = { ...(run.deckEnhancements[cardId] ?? {}), ...patch };
+  const code = faceCode({ rank: card.rank, suit: card.suit });
+  run.deckEnhancements[code] = { ...(run.deckEnhancements[code] ?? {}), ...patch };
 }
 
 /** All standard poker HandTypes that a level-random-hand tarot can pick from. */
@@ -775,23 +966,25 @@ function applyConsumableEffect(
     case "noop":
       return;
     case "enhance_selected": {
+      // Mutate the in-hand card so the badge is visible THIS blind; recordDeckMod persists by
+      // face code so all instances of that face inherit it on the next shuffle.
       for (const card of selectedCards) {
         card.enhancement = effect.enhancement;
-        recordDeckMod(run, card.id, { enhancement: effect.enhancement });
+        recordDeckMod(run, card, { enhancement: effect.enhancement });
       }
       return;
     }
     case "edition_selected": {
       for (const card of selectedCards) {
         card.edition = effect.edition;
-        recordDeckMod(run, card.id, { edition: effect.edition });
+        recordDeckMod(run, card, { edition: effect.edition });
       }
       return;
     }
     case "seal_selected": {
       for (const card of selectedCards) {
         card.seal = effect.seal;
-        recordDeckMod(run, card.id, { seal: effect.seal });
+        recordDeckMod(run, card, { seal: effect.seal });
       }
       return;
     }
@@ -803,8 +996,10 @@ function applyConsumableEffect(
         const code = faceCode({ rank: card.rank, suit: card.suit });
         const compIdx = run.deckComposition.indexOf(code);
         if (compIdx >= 0) run.deckComposition.splice(compIdx, 1);
-        // Drop any persisted modifier for the destroyed instance — it's gone.
-        if (run.deckEnhancements) delete run.deckEnhancements[card.id];
+        // Face overlay is keyed by face code: only drop it when the LAST instance of that face
+        // is gone from the composition (otherwise surviving instances of the same face would
+        // silently lose their modifier).
+        pruneDeckEnhancement(run, code);
       }
       return;
     }
@@ -852,6 +1047,21 @@ function applyConsumableEffect(
       }
       return;
     }
+    case "copy_last_consumable": {
+      // The Fool: spawn a fresh instance of the last Tarot/Planet consumable used this run.
+      // First consumable of the run → tracker is null → silent no-op (slot still freed by caller).
+      const lastId = run.lastConsumableUsedDefId;
+      if (lastId === null) return;
+      const prior = CONSUMABLE_BY_ID.get(lastId);
+      if (!prior) return; // unknown defId (shouldn't happen) — no-op
+      // Balatro: The Fool only copies Tarot or Planet. Spectrals aren't copied.
+      if (prior.kind !== "tarot" && prior.kind !== "planet") return;
+      // Capacity-bound: skip the spawn if slots are full (Fool itself was just removed by the
+      // caller, so cap === current.length means there's no room for the copy).
+      if (run.consumables.length >= effectiveMaxConsumables(run)) return;
+      run.consumables.push({ id: crypto.randomUUID(), defId: prior.id });
+      return;
+    }
     case "double_money": {
       const gain = Math.min(run.money, effect.cap);
       run.money += gain;
@@ -882,7 +1092,9 @@ function applyConsumableEffect(
       for (let i = 0; i < n; i++) {
         if (run.jokers.length === 0) return;
         const idx = Math.floor(rng() * run.jokers.length);
-        run.jokers.splice(idx, 1);
+        const [removed] = run.jokers.splice(idx, 1) as [string];
+        delete run.jokerStates[removed];
+        delete run.jokerEditions[removed];
       }
       return;
     }
@@ -928,17 +1140,22 @@ function applyConsumableEffect(
       return;
     }
     case "rank_convert_hand": {
-      if (run.hand.length === 0) return;
-      const ranks: Rank[] = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
-      const pick = ranks[Math.floor(rng() * ranks.length)]!;
-      for (const card of run.hand) {
-        const oldCode = faceCode({ rank: card.rank, suit: card.suit });
-        card.rank = pick;
-        const newCode = faceCode({ rank: card.rank, suit: card.suit });
-        const compIdx = run.deckComposition.indexOf(oldCode);
-        if (compIdx >= 0) run.deckComposition[compIdx] = newCode;
+      // Rank-convert the (possibly empty) hand first; the hand-size delta still applies even
+      // when the hand happens to be empty, so Ouija on an empty hand still shrinks the run.
+      if (run.hand.length > 0) {
+        const ranks: Rank[] = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
+        const pick = ranks[Math.floor(rng() * ranks.length)]!;
+        for (const card of run.hand) {
+          const oldCode = faceCode({ rank: card.rank, suit: card.suit });
+          card.rank = pick;
+          const newCode = faceCode({ rank: card.rank, suit: card.suit });
+          const compIdx = run.deckComposition.indexOf(oldCode);
+          if (compIdx >= 0) run.deckComposition[compIdx] = newCode;
+        }
       }
-      // TODO(PET-72): Ouija also subtracts 1 from hand size — deferred until HAND_SIZE is a per-run stat.
+      // Ouija's permanent downside (hand size -1). effectiveHandSize floors at 1, so a stacked
+      // negative offset can't deal 0 cards on the next blind.
+      if (effect.handSizeDelta) run.handSizeOffset += effect.handSizeDelta;
       return;
     }
     case "immolate": {
@@ -962,7 +1179,65 @@ function applyConsumableEffect(
       if (run.jokers.length === 0) return;
       const idx = Math.floor(rng() * run.jokers.length);
       const keep = run.jokers[idx]!;
+      // Clean states/editions for every other joker before collapsing the list.
+      for (const jid of run.jokers) {
+        if (jid === keep) continue;
+        delete run.jokerStates[jid];
+        delete run.jokerEditions[jid];
+      }
       run.jokers = [keep, keep];
+      return;
+    }
+    case "apply_joker_edition_random": {
+      // Aura pattern. Prefer un-editioned jokers; fall back to overwriting if all are editioned.
+      if (run.jokers.length === 0) return; // no jokers → no-op (slot still consumed)
+      const candidates = run.jokers.filter((jid) => !run.jokerEditions[jid]);
+      const pool = candidates.length > 0 ? candidates : run.jokers;
+      const jid = pool[Math.floor(rng() * pool.length)]!;
+      const edPool = effect.pool;
+      if (edPool.length === 0) return;
+      const ed = edPool[Math.floor(rng() * edPool.length)]!;
+      run.jokerEditions[jid] = ed;
+      return;
+    }
+    case "apply_joker_edition_negative": {
+      // Ectoplasm pattern. Overwrites any existing edition.
+      if (run.jokers.length === 0) return;
+      const jid = run.jokers[Math.floor(rng() * run.jokers.length)]!;
+      run.jokerEditions[jid] = "negative";
+      return;
+    }
+    case "apply_joker_edition_polychrome_destroy_others": {
+      // Hex pattern. Pick the keep joker first (so rng order is deterministic), then splice the rest.
+      if (run.jokers.length === 0) {
+        if (effect.lose_all_money) run.money = 0;
+        return;
+      }
+      const keepIdx = Math.floor(rng() * run.jokers.length);
+      const keep = run.jokers[keepIdx]!;
+      // Clean states/editions for every joker except `keep`.
+      for (const jid of run.jokers) {
+        if (jid === keep) continue;
+        delete run.jokerStates[jid];
+        delete run.jokerEditions[jid];
+      }
+      run.jokers = [keep];
+      run.jokerEditions[keep] = "poly";
+      if (effect.lose_all_money) run.money = 0;
+      return;
+    }
+    case "wheel_of_fortune_chance": {
+      // Wheel pattern. Consumable is consumed even on the miss branch.
+      const roll = rng();
+      if (roll >= effect.chance) return; // missed — no-op
+      if (run.jokers.length === 0) return;
+      const candidates = run.jokers.filter((jid) => !run.jokerEditions[jid]);
+      const pool = candidates.length > 0 ? candidates : run.jokers;
+      const jid = pool[Math.floor(rng() * pool.length)]!;
+      const edPool = effect.pool;
+      if (edPool.length === 0) return;
+      const ed = edPool[Math.floor(rng() * edPool.length)]!;
+      run.jokerEditions[jid] = ed;
       return;
     }
     case "cryptid_duplicate": {
@@ -999,8 +1274,15 @@ function destroyRandomFromHand(run: RunState, n: number, rng: () => number): voi
     const code = faceCode({ rank: card.rank, suit: card.suit });
     const compIdx = run.deckComposition.indexOf(code);
     if (compIdx >= 0) run.deckComposition.splice(compIdx, 1);
-    if (run.deckEnhancements) delete run.deckEnhancements[card.id];
+    pruneDeckEnhancement(run, code);
   }
+}
+
+/** Drop the overlay entry for `code` ONLY when no instances of that face remain in the composition. */
+function pruneDeckEnhancement(run: RunState, code: string): void {
+  if (!run.deckEnhancements) return;
+  if (run.deckComposition.includes(code)) return;
+  delete run.deckEnhancements[code];
 }
 
 /** Append a random card (from the allowed ranks, any suit) to the deckComposition. */
@@ -1043,25 +1325,41 @@ export function skipBlind(run: RunState, rng: () => number = Math.random): void 
     run.tags.push(tag.id);
   }
   run.skipsThisRun += 1;
-  // Fire any "immediate" tags now (newly-rolled or carried-over).
+  // Fire any "immediate" tags now (newly-rolled or carried-over), then any pack-granting tags
+  // (standard/charm/meteor/buffoon) — these open a free pack right from the blind-select screen.
   applyTags(run, "immediate", rng);
-  // Advance: small → big, big → next ante's small. (Boss isn't skippable — guarded above.)
+  applyTags(run, "on_pack_open", rng);
+  // Advance within the SAME ante: small → big → boss. The boss is never skippable (guarded above),
+  // so skipping the small and/or big still leaves this ante's boss to be played before advancing.
   if (run.blindIndex === 0) {
-    run.blindIndex = 1;
+    run.blindIndex = 1; // small → big
   } else if (run.blindIndex === 1) {
-    if (run.ante < MAX_ANTE) {
-      run.ante += 1;
-      run.blindIndex = 0;
-    }
+    run.blindIndex = 2; // big → boss (must be played)
   }
   run.target = blindTarget(run.ante, run.blindIndex, run.difficulty);
 }
 
-function draw(run: RunState, count: number): void {
+function draw(run: RunState, count: number, rng: () => number = Math.random): void {
   const n = Math.min(count, run.deck.length);
+  const fresh: Card[] = [];
   for (let i = 0; i < n; i++) {
-    run.hand.push(run.deck.shift()!);
+    const card = run.deck.shift()!;
+    run.hand.push(card);
+    fresh.push(card);
   }
+  // PET-83: Wheel/Mark applies to every freshly-drawn card, so Hook + Wheel interact correctly.
+  if (fresh.length > 0) applyFaceDownEffect(fresh, run.currentBossEffect, rng);
+}
+
+/**
+ * Refill the hand up to the run's current effectiveHandSize, capped by what's left in the deck.
+ * If the hand is already at/above target (e.g. Cryptid just added clones), this is a no-op.
+ * Used by playHand, discardCards, and The Hook — anywhere we replenish after cards leave.
+ */
+function drawToHandSize(run: RunState, rng: () => number = Math.random): void {
+  const target = effectiveHandSize(run);
+  const need = target - run.hand.length;
+  if (need > 0) draw(run, need, rng);
 }
 
 function removeFromHand(run: RunState, ids: string[]): void {

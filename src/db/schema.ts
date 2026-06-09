@@ -1,7 +1,7 @@
 /** Drizzle schema (Postgres). The run's full state — including the hidden deck — rides in a JSONB column. */
 
 import { sql } from "drizzle-orm";
-import { bigint, index, integer, jsonb, pgTable, text } from "drizzle-orm/pg-core";
+import { bigint, date, index, integer, jsonb, pgTable, text } from "drizzle-orm/pg-core";
 import type { RunState } from "../engine/run.ts";
 
 // Timestamps stay as integer epoch *seconds* (matching the prior SQLite `unixepoch()` default and the
@@ -37,7 +37,21 @@ export const gameSessions = pgTable(
   ],
 );
 
+/**
+ * PET-65 — light play analytics. One row per UTC day; each counter UPSERTs +1 on activity.
+ * Daily granularity keeps it queryable without keeping per-event PII; tester names are still
+ * elsewhere (users / structured logs), not here.
+ */
+export const eventCounts = pgTable("event_counts", {
+  date: date("date").primaryKey(), // UTC day (YYYY-MM-DD)
+  runsStarted: integer("runs_started").notNull().default(0),
+  runsWon: integer("runs_won").notNull().default(0),
+  runsLost: integer("runs_lost").notNull().default(0),
+  handsPlayed: integer("hands_played").notNull().default(0),
+});
+
 export type UserRow = typeof users.$inferSelect;
 export type NewUserRow = typeof users.$inferInsert;
 export type GameSessionRow = typeof gameSessions.$inferSelect;
 export type NewGameSessionRow = typeof gameSessions.$inferInsert;
+export type EventCountsRow = typeof eventCounts.$inferSelect;

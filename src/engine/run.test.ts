@@ -8,11 +8,15 @@ import {
   sellJoker,
   startBlind,
   startRun,
+  toRunDTO,
+  useConsumable,
   type RunState,
 } from "./run.ts";
 import { cards, withMod, card as cardOne } from "../testkit.ts";
 import { faceCode, standardFaces } from "../cards.ts";
 import { defaultHandLevels } from "../scoring.ts";
+import { effectiveHandSize } from "./effectives.ts";
+import { HAND_SIZE } from "../difficulty.ts";
 
 function runWith(over: Partial<RunState> & { hand: RunState["hand"] }): RunState {
   return {
@@ -44,8 +48,13 @@ function runWith(over: Partial<RunState> & { hand: RunState["hand"] }): RunState
     skipsThisRun: 0,
     currentBossEffect: null,
     jokerStates: {},
+    jokerEditions: {},
     discardsUsedThisBlind: 0,
     heldGoldRoundEnd: false,
+    nextHandMultBonus: 0,
+    freeVoucherPending: false,
+    handSizeOffset: 0,
+    lastConsumableUsedDefId: null,
     openingPack: null,
     deckEnhancements: {},
     createdAt: 0,
@@ -292,6 +301,109 @@ describe("jokers", () => {
   });
 });
 
+describe("joker editions (PET-67)", () => {
+  // Build an rng that returns a fixed sequence of values, repeating the last.
+  function seqRng(...vals: number[]): () => number {
+    let i = 0;
+    return () => (i < vals.length ? vals[i++]! : vals[vals.length - 1]!);
+  }
+
+  it("startRun initializes jokerEditions to {}", () => {
+    const run = startRun("medium", "u1");
+    expect(run.jokerEditions).toEqual({});
+  });
+
+  it("sellJoker clears the jokerEditions entry", () => {
+    const run = runWith({
+      hand: cards("2C"),
+      jokers: ["joker"],
+      jokerEditions: { joker: "foil" },
+      money: 0,
+    });
+    sellJoker(run, "joker");
+    expect(run.jokerEditions.joker).toBeUndefined();
+  });
+
+  it("a Negative joker raises effectiveMaxJokers by 1 (DTO reflects 6 slots)", () => {
+    const run = runWith({
+      hand: cards("2C"),
+      jokers: ["joker"],
+      jokerEditions: { joker: "negative" },
+    });
+    expect(toRunDTO(run).maxJokers).toBe(6);
+  });
+
+  it("toRunDTO surfaces edition on the JokerView when set", () => {
+    const run = runWith({
+      hand: cards("2C"),
+      jokers: ["joker", "the_duo"],
+      jokerEditions: { joker: "poly" },
+    });
+    const dto = toRunDTO(run);
+    expect(dto.jokers[0]?.edition).toBe("poly");
+    expect(dto.jokers[1]?.edition).toBeUndefined();
+  });
+
+  it("Aura applies a random non-noop edition (seeded rng) to a random joker", () => {
+    // rng calls (in order): pick joker index, pick edition index.
+    // With 2 jokers + pool ["foil","holo","poly"]: 0.6 → idx 1 (the_duo), 0.0 → "foil".
+    const run = runWith({
+      hand: cards("2C"),
+      jokers: ["joker", "the_duo"],
+      status: "playing",
+    });
+    run.consumables.push({ id: "aura-1", defId: "aura" });
+    useConsumable(run, "aura-1", undefined, seqRng(0.6, 0.0));
+    expect(run.jokerEditions.the_duo).toBe("foil");
+    expect(run.jokerEditions.joker).toBeUndefined();
+    expect(run.consumables).toEqual([]);
+  });
+
+  it("Ectoplasm overwrites any existing edition with Negative", () => {
+    const run = runWith({
+      hand: cards("2C"),
+      jokers: ["joker"],
+      jokerEditions: { joker: "foil" },
+    });
+    run.consumables.push({ id: "ecto-1", defId: "ectoplasm" });
+    useConsumable(run, "ecto-1", undefined, seqRng(0));
+    expect(run.jokerEditions.joker).toBe("negative");
+  });
+
+  it("Hex with 3 jokers: keeps 1 with poly, destroys the others (states + editions cleared)", () => {
+    const run = runWith({
+      hand: cards("2C"),
+      jokers: ["joker", "green_joker", "the_duo"],
+      jokerStates: { green_joker: { counter: 5 } },
+      jokerEditions: { the_duo: "foil" },
+      money: 10,
+    });
+    run.consumables.push({ id: "hex-1", defId: "hex" });
+    // rng 0.4 → idx 1 (green_joker) is kept.
+    useConsumable(run, "hex-1", undefined, seqRng(0.4));
+    expect(run.jokers).toEqual(["green_joker"]);
+    expect(run.jokerEditions).toEqual({ green_joker: "poly" });
+    expect(run.jokerStates).toEqual({ green_joker: { counter: 5 } });
+    expect(run.money).toBe(10); // Hex does NOT zero money
+  });
+
+  it("Wheel of Fortune: rng < 0.25 applies edition, rng >= 0.25 is a no-op; both consume the slot", () => {
+    // Hit branch.
+    const hit = runWith({ hand: cards("2C"), jokers: ["joker"] });
+    hit.consumables.push({ id: "w1", defId: "the_wheel_of_fortune" });
+    // rng 0.1 → roll succeeds (< 0.25); 0.0 → joker idx 0; 0.0 → "foil".
+    useConsumable(hit, "w1", undefined, seqRng(0.1, 0.0, 0.0));
+    expect(hit.jokerEditions.joker).toBe("foil");
+    expect(hit.consumables).toEqual([]);
+    // Miss branch.
+    const miss = runWith({ hand: cards("2C"), jokers: ["joker"] });
+    miss.consumables.push({ id: "w2", defId: "the_wheel_of_fortune" });
+    useConsumable(miss, "w2", undefined, seqRng(0.9));
+    expect(miss.jokerEditions.joker).toBeUndefined();
+    expect(miss.consumables).toEqual([]); // tag consumed either way
+  });
+});
+
 describe("card modifier end-of-blind hooks (PET-75)", () => {
   it("gold-enhancement payout: +$3 per gold card held in hand at round end", () => {
     // Two gold cards stay in hand; the played pair clears the small-blind target.
@@ -324,5 +436,177 @@ describe("card modifier end-of-blind hooks (PET-75)", () => {
     expect(run.status).toBe("shop");
     expect(run.heldGoldRoundEnd).toBe(false);
     expect(run.money).toBe(5); // just the standard cash-out
+  });
+
+  it("glass-break: rng < 0.25 destroys the played glass card from deckComposition", () => {
+    const glassK = withMod(cardOne("KH"), { enhancement: "glass" });
+    const run = runWith({
+      hand: [glassK, cardOne("KS"), cardOne("3D"), cardOne("7C"), cardOne("9S")],
+      target: 10000, // don't end the blind — keep run in "playing"
+      handsRemaining: 5,
+      deck: cards("2C 3C 4C 5C 6C"),
+    });
+    const before = run.deckComposition.length;
+    // rng() returns 0.1 → < 0.25 → glass card destroyed
+    playHand(run, ["KH", "KS"], () => 0.1);
+    expect(run.deckComposition.length).toBe(before - 1);
+    expect(run.deckComposition).not.toContain("KH");
+  });
+
+  it("glass-break: rng >= 0.25 survives — deckComposition unchanged", () => {
+    const glassK = withMod(cardOne("KH"), { enhancement: "glass" });
+    const run = runWith({
+      hand: [glassK, cardOne("KS"), cardOne("3D"), cardOne("7C"), cardOne("9S")],
+      target: 10000,
+      handsRemaining: 5,
+      deck: cards("2C 3C 4C 5C 6C"),
+    });
+    const before = run.deckComposition.slice();
+    playHand(run, ["KH", "KS"], () => 0.9); // no glass break
+    expect(run.deckComposition).toEqual(before);
+  });
+
+  it("glass-break: each glass card rolls independently (one breaks, one survives)", () => {
+    const glassA = withMod(cardOne("KH"), { enhancement: "glass" });
+    const glassB = withMod(cardOne("KS"), { enhancement: "glass" });
+    const run = runWith({
+      hand: [glassA, glassB, cardOne("3D"), cardOne("7C"), cardOne("9S")],
+      target: 10000,
+      handsRemaining: 5,
+      deck: cards("2C 3C 4C 5C 6C"),
+    });
+    // First roll 0.1 (< 0.25 → break KH); second roll 0.9 (>= 0.25 → KS survives).
+    const before = run.deckComposition.length;
+    playHand(run, ["KH", "KS"], seqRng(0.1, 0.9));
+    expect(run.deckComposition.length).toBe(before - 1);
+    expect(run.deckComposition).not.toContain("KH");
+    expect(run.deckComposition).toContain("KS");
+  });
+
+  it("blue seal: each blue-sealed card held at end of blind levels up the played hand type", () => {
+    const blueA = withMod(cardOne("3D"), { seal: "blue" });
+    const blueB = withMod(cardOne("7C"), { seal: "blue" });
+    const run = runWith({
+      hand: [cardOne("KH"), cardOne("KS"), blueA, blueB, cardOne("9S")],
+      target: 50,
+      blindIndex: 0,
+      handsRemaining: 3,
+    });
+    expect(run.handLevels.pair).toBe(1);
+    playHand(run, ["KH", "KS"]);
+    expect(run.status).toBe("shop");
+    // Two blue-sealed cards held → pair levels up by 2 (1 each).
+    expect(run.handLevels.pair).toBe(3);
+  });
+
+  it("gold seal: +$3 per gold-sealed card in the scoring set", () => {
+    const goldK = withMod(cardOne("KH"), { seal: "gold" });
+    const goldKicker = withMod(cardOne("3D"), { seal: "gold" }); // not in scoring set (pair only)
+    const run = runWith({
+      hand: [goldK, cardOne("KS"), goldKicker, cardOne("7C"), cardOne("9S")],
+      // Keep target unreachable AND leave hands so the run stays "playing".
+      target: 1_000_000,
+      handsRemaining: 5,
+      money: 0,
+      deck: cards("2C 3C 4C 5C 6C"),
+    });
+    playHand(run, ["KH", "KS", "3D", "7C", "9S"]);
+    expect(run.status).toBe("playing");
+    // pair scores KH+KS only; only goldK is in scoringCardIds → +$3.
+    expect(run.money).toBe(3);
+  });
+
+  it("purple seal: discarding a purple-sealed card creates a random tarot consumable", () => {
+    const purpleK = withMod(cardOne("KH"), { seal: "purple" });
+    const run = runWith({
+      hand: [purpleK, cardOne("KS"), cardOne("3D"), cardOne("7C"), cardOne("9S")],
+      deck: cards("2C 3C"),
+      discardsRemaining: 1,
+      maxConsumables: 2,
+    });
+    expect(run.consumables.length).toBe(0);
+    discardCards(run, ["KH"], () => 0);
+    expect(run.consumables.length).toBe(1);
+    // First tarot in catalog is "the_fool".
+    expect(run.consumables[0]!.defId).toBe("the_fool");
+  });
+
+  it("purple seal: respects max consumables — no spawn when full", () => {
+    const purpleK = withMod(cardOne("KH"), { seal: "purple" });
+    const run = runWith({
+      hand: [purpleK, cardOne("KS"), cardOne("3D"), cardOne("7C"), cardOne("9S")],
+      deck: cards("2C 3C"),
+      discardsRemaining: 1,
+      maxConsumables: 1,
+      consumables: [{ id: "x", defId: "the_fool" }], // already full
+    });
+    discardCards(run, ["KH"], () => 0);
+    expect(run.consumables.length).toBe(1); // unchanged
+  });
+});
+
+/** Deterministic RNG that emits a fixed sequence (loops if exhausted). */
+function seqRng(...values: number[]): () => number {
+  let i = 0;
+  return () => values[i++ % values.length]!;
+}
+describe("effectiveHandSize (PET-67)", () => {
+  it("defaults to HAND_SIZE when no vouchers and no offset", () => {
+    const run = runWith({ hand: [] });
+    expect(HAND_SIZE).toBe(8);
+    expect(effectiveHandSize(run)).toBe(8);
+  });
+
+  it("Hieroglyph voucher (+1 hand_size) flows through", () => {
+    const run = runWith({ hand: [], vouchers: ["hieroglyph"] });
+    expect(effectiveHandSize(run)).toBe(9);
+  });
+
+  it("Ouija's handSizeOffset (-1) is reflected", () => {
+    const run = runWith({ hand: [], handSizeOffset: -1 });
+    expect(effectiveHandSize(run)).toBe(7);
+  });
+
+  it("Hieroglyph (+1) and Ouija (-1) stack to the base size", () => {
+    const run = runWith({ hand: [], vouchers: ["hieroglyph"], handSizeOffset: -1 });
+    expect(effectiveHandSize(run)).toBe(8);
+  });
+
+  it("floored at 1 — a stacked downside can never produce 0", () => {
+    const run = runWith({ hand: [], handSizeOffset: -100 });
+    expect(effectiveHandSize(run)).toBe(1);
+  });
+
+  it("startBlind deals effectiveHandSize cards, not the bare constant", () => {
+    // Hieroglyph: 8 + 1 = 9; assert the initial deal pulls 9.
+    const run = startRun("medium", "u1");
+    run.vouchers.push("hieroglyph");
+    startBlind(run);
+    expect(run.hand.length).toBe(9);
+    expect(run.deck.length).toBe(52 - 9);
+  });
+
+  it("startBlind with Ouija offset deals 7", () => {
+    const run = startRun("medium", "u1");
+    run.handSizeOffset = -1;
+    startBlind(run);
+    expect(run.hand.length).toBe(7);
+    expect(run.deck.length).toBe(52 - 7);
+  });
+
+  it("Ouija mid-blind: current hand isn't shrunk; NEXT play refills to the new (smaller) size", () => {
+    // 8 cards in hand, plenty in deck; Ouija shifts offset to -1 but does NOT remove a card.
+    const handCards = cards("2C 3D 4H 5S 6C 7D 8H 9S");
+    const deckCards = cards("TC JD QH KS AC 2D 3H 4S");
+    const run = runWith({ hand: handCards, deck: deckCards, handsRemaining: 3 });
+    run.consumables.push({ id: "ouija-1", defId: "ouija" });
+    useConsumable(run, "ouija-1", undefined, () => 0); // deterministic rng
+    expect(run.handSizeOffset).toBe(-1);
+    expect(run.hand.length).toBe(8); // not retroactively shrunk
+    // Next play removes 2 and refills to effectiveHandSize=7 (so draws 1 not 2).
+    const deckBefore = run.deck.length;
+    playHand(run, [run.hand[0]!.id, run.hand[1]!.id]);
+    expect(run.hand.length).toBe(7);
+    expect(run.deck.length).toBe(deckBefore - 1); // only 1 drawn, not 2
   });
 });

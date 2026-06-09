@@ -20,7 +20,6 @@ import {
   type PackChoiceItem,
   type PackDef,
   type PackKind,
-  type PackSize,
 } from "./packs.ts";
 import { VOUCHERS, type VoucherDef } from "./vouchers.ts";
 import {
@@ -89,7 +88,8 @@ export interface JokerShopItem {
 export interface ConsumableShopItem {
   id: string; // "consumable:<defId>"
   kind: "consumable";
-  consumableId: string;
+  defId: string;
+  consumableKind: "tarot" | "planet" | "spectral";
   name: string;
   description: string;
   cost: number;
@@ -109,13 +109,13 @@ export interface PackShopItem {
   kind: "pack";
   packId: string;
   name: string;
+  description: string;
   cost: number;
-  size: PackSize;
-  packKind: PackKind;
-  /** How many of `contents` the player picks when this pack is opened. */
-  choices: number;
-  /** How many items are presented when this pack is opened. */
-  contents: number;
+  /** Pack family (identical union to the FE's PackFamily) — accents the tile. */
+  family: PackKind;
+  /** "Choose N of M" — N picks from M presented options when opened. */
+  picksAllowed: number;
+  optionsCount: number;
 }
 
 export type ShopItem =
@@ -164,7 +164,8 @@ function makeConsumableItem(def: ConsumableDef, discountPct: number): Consumable
   return {
     id: `consumable:${def.id}`,
     kind: "consumable",
-    consumableId: def.id,
+    defId: def.id,
+    consumableKind: def.kind,
     name: def.name,
     description: def.description,
     cost: applyShopDiscount(def.cost, discountPct),
@@ -188,11 +189,11 @@ function makePackItem(def: PackDef, discountPct: number): PackShopItem {
     kind: "pack",
     packId: def.id,
     name: def.name,
+    description: `Choose ${def.choices} of ${def.contents}`,
     cost: applyShopDiscount(def.cost, discountPct),
-    size: def.size,
-    packKind: def.kind,
-    choices: def.choices,
-    contents: def.contents,
+    family: def.kind,
+    picksAllowed: def.choices,
+    optionsCount: def.contents,
   };
 }
 
@@ -252,6 +253,9 @@ export function generateShop(run: RunState, rng: () => number = Math.random): Sh
     if (eligible.length > 0) {
       const pool = shuffle(eligible, rng);
       voucher = makeVoucherItem(pool[0]!, discountPct);
+      // PET-78 free_voucher tag: zero-cost voucher slot until the player actually buys it
+      // (persists through rerolls — Balatro behavior). Cleared in buyItem on success.
+      if (run.freeVoucherPending) voucher.cost = 0;
     }
   }
   const rerollCost = Math.max(1, REROLL_BASE_COST - effectiveRerollDiscount(run));
@@ -269,6 +273,8 @@ export function buyItem(run: RunState, itemId: unknown): void {
     run.money -= v.cost;
     run.vouchers.push(v.voucherId);
     run.shop.voucher = null;
+    // PET-78 free_voucher tag: consumed on a successful voucher purchase (regardless of cost).
+    run.freeVoucherPending = false;
     return;
   }
 
@@ -294,7 +300,7 @@ export function buyItem(run: RunState, itemId: unknown): void {
       run.jokerStates[item.jokerId] = { counter: 0 };
     }
   } else if (item.kind === "consumable") {
-    run.consumables.push({ id: crypto.randomUUID(), defId: item.consumableId });
+    run.consumables.push({ id: crypto.randomUUID(), defId: item.defId });
   } else if (item.kind === "pack") {
     // Booster pack — remove from shop and open it (status → "pack_open").
     run.shop.items.splice(idx, 1);

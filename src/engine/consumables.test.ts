@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { GameError, sellConsumable, useConsumable, type RunState } from "./run.ts";
+import {
+  GameError,
+  sellConsumable,
+  startBlind,
+  useConsumable,
+  type RunState,
+} from "./run.ts";
 import { CONSUMABLE_BY_ID } from "./consumables.ts";
 import { faceCode, standardFaces, type Card } from "../cards.ts";
 import { cards } from "../testkit.ts";
@@ -36,8 +42,13 @@ function makeRun(over: Partial<RunState> & { hand: Card[] }): RunState {
     skipsThisRun: 0,
     currentBossEffect: null,
     jokerStates: {},
+    jokerEditions: {},
     discardsUsedThisBlind: 0,
     heldGoldRoundEnd: false,
+    nextHandMultBonus: 0,
+    freeVoucherPending: false,
+    handSizeOffset: 0,
+    lastConsumableUsedDefId: null,
     deckEnhancements: {},
     openingPack: null,
     createdAt: 0,
@@ -195,13 +206,82 @@ describe("sellConsumable", () => {
   });
 });
 
-describe("useConsumable — noop / deferred", () => {
-  it("The Fool is consumed but does nothing else", () => {
+describe("useConsumable — The Fool (copy_last_consumable)", () => {
+  it("first consumable of the run: no-op (tracker null), consumable still consumed", () => {
     const run = makeRun({ hand: cards("2C"), money: 10 });
+    expect(run.lastConsumableUsedDefId).toBe(null);
     const id = giveTarot(run, "the_fool");
     useConsumable(run, id);
-    expect(run.money).toBe(10);
+    // Slot freed, nothing spawned, tracker still null (Fool doesn't track itself).
     expect(run.consumables).toEqual([]);
+    expect(run.lastConsumableUsedDefId).toBe(null);
+    expect(run.money).toBe(10);
+  });
+
+  it("after using a Tarot (Hermit), tracker is set and Fool spawns a copy of that tarot", () => {
+    const run = makeRun({ hand: cards("2C"), money: 0, maxConsumables: 3 });
+    const hermitId = giveTarot(run, "the_hermit", "inst-hermit");
+    useConsumable(run, hermitId);
+    // Hermit fired: money doubled (0+0 capped at 0 — but tracker is what matters).
+    expect(run.lastConsumableUsedDefId).toBe("the_hermit");
+    // Now drop in a Fool and use it.
+    const foolId = giveTarot(run, "the_fool", "inst-fool");
+    useConsumable(run, foolId);
+    // Fool consumed, one Hermit copy spawned in slots.
+    expect(run.consumables.length).toBe(1);
+    expect(run.consumables[0]!.defId).toBe("the_hermit");
+    // Tracker unchanged — Fool itself doesn't overwrite.
+    expect(run.lastConsumableUsedDefId).toBe("the_hermit");
+  });
+
+  it("after using a Spectral (Sigil), Fool spawns no copy (spectral filter)", () => {
+    const run = makeRun({ hand: cards("2C 3D 4H"), maxConsumables: 3 });
+    const sigilId = giveTarot(run, "sigil", "inst-sigil");
+    useConsumable(run, sigilId, undefined, () => 0);
+    expect(run.lastConsumableUsedDefId).toBe("sigil");
+    // Drop in a Fool — it should not spawn a copy because Sigil is spectral.
+    const foolId = giveTarot(run, "the_fool", "inst-fool");
+    useConsumable(run, foolId);
+    // Fool consumed, no copy added.
+    expect(run.consumables).toEqual([]);
+    // Tracker still points at the spectral (Fool doesn't overwrite).
+    expect(run.lastConsumableUsedDefId).toBe("sigil");
+  });
+
+  it("two Fools in a row after Hermit both spawn Hermit copies (Fool doesn't track itself)", () => {
+    const run = makeRun({ hand: cards("2C"), maxConsumables: 4 });
+    const hermitId = giveTarot(run, "the_hermit", "inst-hermit");
+    useConsumable(run, hermitId);
+    expect(run.lastConsumableUsedDefId).toBe("the_hermit");
+    // Now give 2 Fools and use them sequentially.
+    const fool1 = giveTarot(run, "the_fool", "inst-fool-1");
+    const fool2 = giveTarot(run, "the_fool", "inst-fool-2");
+    useConsumable(run, fool1);
+    useConsumable(run, fool2);
+    // Both Fools consumed, both spawned Hermits → 2 Hermit instances.
+    const hermits = run.consumables.filter((c) => c.defId === "the_hermit");
+    expect(hermits.length).toBe(2);
+    expect(run.consumables.find((c) => c.defId === "the_fool")).toBeUndefined();
+    // Tracker still hermit (Fools didn't overwrite it).
+    expect(run.lastConsumableUsedDefId).toBe("the_hermit");
+  });
+
+  it("slots full: Fool's spawn is skipped, but Fool is still consumed", () => {
+    // maxConsumables=2, prefill: use Hermit to set tracker, then load [Fool, Hermit] (full).
+    const run = makeRun({ hand: cards("2C"), maxConsumables: 2 });
+    const hermitId = giveTarot(run, "the_hermit", "inst-hermit-seed");
+    useConsumable(run, hermitId);
+    expect(run.lastConsumableUsedDefId).toBe("the_hermit");
+    // Now fill slots: a Fool + a Hermit.
+    giveTarot(run, "the_fool", "inst-fool");
+    giveTarot(run, "the_hermit", "inst-hermit-kept");
+    expect(run.consumables.length).toBe(2);
+    // Use the Fool. With both slots occupied, the spawn is skipped.
+    useConsumable(run, "inst-fool");
+    // Fool consumed (slot freed), the other Hermit remains, NO new Hermit copy added.
+    expect(run.consumables.length).toBe(1);
+    expect(run.consumables[0]!.defId).toBe("the_hermit");
+    expect(run.consumables[0]!.id).toBe("inst-hermit-kept");
   });
 });
 
@@ -283,7 +363,7 @@ describe("useConsumable — spectrals (deck mutations)", () => {
     expect(run.deckComposition.includes("6C")).toBe(true);
   });
 
-  it("Ouija converts every card in hand to a single random rank", () => {
+  it("Ouija converts every card in hand to a single random rank AND shrinks handSizeOffset by 1", () => {
     const run = makeRun({ hand: cards("2C 3D 4H 5S") });
     const id = giveTarot(run, "ouija", "inst-ou");
     // rng = 0 → first rank in [2..14] = 2.
@@ -291,6 +371,15 @@ describe("useConsumable — spectrals (deck mutations)", () => {
     for (const card of run.hand) {
       expect(card.rank).toBe(2);
     }
+    // Ouija also subtracts 1 from the run's permanent hand size (PET-67).
+    expect(run.handSizeOffset).toBe(-1);
+  });
+
+  it("Ouija on an empty hand still applies the -1 hand-size downside", () => {
+    const run = makeRun({ hand: [] });
+    const id = giveTarot(run, "ouija", "inst-ou2");
+    useConsumable(run, id, undefined, () => 0);
+    expect(run.handSizeOffset).toBe(-1);
   });
 });
 
@@ -366,5 +455,107 @@ describe("useConsumable — spectrals (deferred placeholders)", () => {
     useConsumable(run, id);
     expect(run.money).toBe(10);
     expect(run.consumables).toEqual([]);
+  });
+});
+
+// ---- deckEnhancements key-space (PET-67 reconciliation) -------------------
+//
+// These tests pin the face-code key convention. The bug they guard against: PET-71 used to write
+// per-card-instance ids ("KH-0") which regenerate on every shuffle (instantiateDeck), so a tarot
+// enhancement vanished on the next blind. Face-code keys ("KH") inherit onto every future
+// instance of that face — see the deckEnhancements field doc + the comment in useConsumable.
+
+describe("deckEnhancements — face-code key persistence", () => {
+  it("persists an enhancement across a reshuffle (next blind's KH still has Mult)", () => {
+    // Enhance KH with Mult via The Empress, then transition to selecting_blind and re-deal.
+    const run = makeRun({ hand: cards("KH KS 3D 7C 9S") });
+    const id = giveTarot(run, "the_empress");
+    useConsumable(run, id, ["KH", "KS"]);
+    // In-hand badge applied this blind.
+    expect(run.hand.find((c) => c.id === "KH")!.enhancement).toBe("mult");
+    // Persisted by face code (not by id "KH-0" or similar).
+    expect(run.deckEnhancements?.["KH"]?.enhancement).toBe("mult");
+
+    // Reshuffle for the next blind — startBlind re-instantiates from deckComposition.
+    run.status = "selecting_blind";
+    startBlind(run, () => 0);
+
+    // Every instance of KH in the new hand AND deck carries the mult enhancement.
+    const allCards = [...run.hand, ...run.deck];
+    const kingsOfHearts = allCards.filter((c) => c.rank === 13 && c.suit === "hearts");
+    expect(kingsOfHearts.length).toBe(1);
+    for (const kh of kingsOfHearts) expect(kh.enhancement).toBe("mult");
+  });
+
+  it("second enhancement of the same face overwrites the first cleanly", () => {
+    // The Tower applies Stone first, then The Empress applies Mult to the same face.
+    const run = makeRun({ hand: cards("KH 2C 3D 4H 5S") });
+    const tower = giveTarot(run, "the_tower", "inst-tow");
+    useConsumable(run, tower, ["KH"]);
+    expect(run.deckEnhancements?.["KH"]?.enhancement).toBe("stone");
+
+    // Second consumable on the same face — should overwrite.
+    const empress = giveTarot(run, "the_empress", "inst-emp");
+    // Empress wants 2 selections — give it KH plus a filler so we can target KH specifically.
+    useConsumable(run, empress, ["KH", "2C"]);
+    expect(run.deckEnhancements?.["KH"]?.enhancement).toBe("mult");
+    // In-hand card reflects the latest enhancement too.
+    expect(run.hand.find((c) => c.id === "KH")!.enhancement).toBe("mult");
+  });
+
+  it("enhancement + edition coexist on the same face (merged, not overwritten)", () => {
+    // Mult enhancement via Empress, then a Foil edition via direct overlay write (no foil tarot
+    // in the catalog yet — we exercise the recordDeckMod merge path through the seal_selected /
+    // edition_selected family by setting deckEnhancements directly to simulate a future writer).
+    const run = makeRun({ hand: cards("KH KS 3D 7C 9S") });
+    const empress = giveTarot(run, "the_empress");
+    useConsumable(run, empress, ["KH", "KS"]);
+    expect(run.deckEnhancements?.["KH"]?.enhancement).toBe("mult");
+
+    // Simulate a future edition-on-face writer (the merge contract recordDeckMod guarantees).
+    run.deckEnhancements!["KH"] = {
+      ...(run.deckEnhancements!["KH"] ?? {}),
+      edition: "foil",
+    };
+
+    // Reshuffle — face overlay merges enhancement + edition onto the new instance.
+    run.status = "selecting_blind";
+    startBlind(run, () => 0);
+    const kh = [...run.hand, ...run.deck].find((c) => c.rank === 13 && c.suit === "hearts")!;
+    expect(kh.enhancement).toBe("mult");
+    expect(kh.edition).toBe("foil");
+  });
+
+  it("destroy_selected removes the overlay entry once the LAST instance of that face is gone", () => {
+    // Enhance KH (single instance in standard deck), then The Hanged Man destroys it.
+    const run = makeRun({ hand: cards("KH 2C 3D 4H 5S") });
+    const tower = giveTarot(run, "the_tower", "inst-tow");
+    useConsumable(run, tower, ["KH"]);
+    expect(run.deckEnhancements?.["KH"]?.enhancement).toBe("stone");
+    expect(run.deckComposition.includes("KH")).toBe(true);
+
+    // Hanged Man needs 2 selections — destroy KH + a filler.
+    const hanged = giveTarot(run, "the_hanged_man", "inst-hng");
+    useConsumable(run, hanged, ["KH", "2C"]);
+    // KH no longer in composition → overlay entry pruned (avoid stale overlays piling up).
+    expect(run.deckComposition.includes("KH")).toBe(false);
+    expect(run.deckEnhancements?.["KH"]).toBeUndefined();
+  });
+
+  it("destroy_selected KEEPS the overlay entry when a duplicate of that face remains", () => {
+    // Two KH in deckComposition (simulate Cryptid having dup'd KH earlier). Destroy one — the
+    // overlay must survive because the surviving KH instance would otherwise lose its badge.
+    const run = makeRun({
+      hand: cards("KH 2C 3D 4H 5S"),
+      deckComposition: [...standardFaces().map(faceCode), "KH"], // 53 faces, 2 KH
+    });
+    // Seed an enhancement on the face manually (skip the consumable to focus on the prune path).
+    run.deckEnhancements = { KH: { enhancement: "mult" } };
+
+    const hanged = giveTarot(run, "the_hanged_man", "inst-hng2");
+    useConsumable(run, hanged, ["KH", "2C"]);
+    // One KH gone from composition, one remains → overlay must persist.
+    expect(run.deckComposition.filter((f) => f === "KH").length).toBe(1);
+    expect(run.deckEnhancements?.["KH"]?.enhancement).toBe("mult");
   });
 });

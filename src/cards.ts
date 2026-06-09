@@ -23,6 +23,12 @@ export interface Card {
   enhancement?: CardEnhancement;
   edition?: CardEdition;
   seal?: CardSeal;
+  /**
+   * Boss-effect overlay (PET-83). True while a card is dealt face-down by The Wheel / The Mark.
+   * Face-down cards display as a hidden back, contribute nothing to scoring, and are revealed
+   * (flipped to false) when played — so the play animation can show what they actually were.
+   */
+  faceDown?: boolean;
 }
 
 export const ALL_SUITS: readonly Suit[] = ["clubs", "diamonds", "hearts", "spades"];

@@ -87,8 +87,15 @@ export interface ScoreContext {
   money?: number;
   /** Per-joker counter state (drives scaling_per_blind_*). */
   jokerStates?: Record<string, { counter: number }>;
+  /**
+   * Per-joker edition overlay (PET-67). foil +50 chips, holo +10 mult, poly ×1.5 mult;
+   * negative is slot-only (no scoring effect, handled by effectiveMaxJokers).
+   */
+  jokerEditions?: Record<string, "foil" | "holo" | "poly" | "negative">;
   /** Cards still HELD in hand (not played) — steel enhancement reads this for x1.5 per steel held. */
   handHeld?: Card[];
+  /** Transient flat mult bonus consumed by the next scored hand (PET-78 mult_add_next_hand tag). */
+  nextHandMultBonus?: number;
 }
 
 /** One joker's contribution during scoring — drives the play-resolution animation. */
@@ -158,7 +165,26 @@ export interface ScoreBreakdown {
 }
 
 export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
-  const { handType, scoringCardIds } = evaluateHand(played);
+  // PET-83: face-down cards (boss effects The Wheel / The Mark) contribute nothing — no chips,
+  // no edition / seal / enhancement effects, no joker triggers. If EVERY played card is
+  // face-down, return a high_card scored at 0 so the play still resolves.
+  const visible = played.filter((c) => !c.faceDown);
+  if (visible.length === 0) {
+    return {
+      handType: "high_card",
+      handLabel: HAND_LABEL.high_card,
+      handLevel: ctx?.handLevels.high_card ?? 1,
+      baseChips: 0,
+      baseMult: 0,
+      scoringCardIds: [],
+      scoringChips: 0,
+      totalChips: 0,
+      score: 0,
+      jokerSteps: [],
+    };
+  }
+
+  const { handType, scoringCardIds } = evaluateHand(visible);
   const level = ctx?.handLevels[handType] ?? 1;
   const base = BASE_VALUES[handType];
   const per = PER_LEVEL[handType];
@@ -175,7 +201,7 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
     if (def?.effect.kind === "retrigger_face") retriggerFaceCount += 1;
   }
 
-  const cardById = new Map(played.map((c) => [c.id, c]));
+  const cardById = new Map(visible.map((c) => [c.id, c]));
   let scoringChips = 0;
   const scoredCards: Card[] = [];
   for (const id of scoringCardIds) {
@@ -213,7 +239,7 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
           break;
         case "glass":
           modXMult *= 2;
-          // TODO PET-75: 1-in-4 glass-break at end of blind (currently no-op).
+          // Glass-break (1-in-4 destroy on play) is rolled in run.ts:playHand after scoring.
           break;
         case "steel":
           // Steel only scores when HELD in hand, not when played. No-op here.
@@ -261,14 +287,19 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
         modChips += chipValue(card.rank);
       }
     }
-    // TODO PET-75: blue (creates planet on end-of-round if held), gold ($3 at end-of-round
-    // if it scored), purple (creates tarot at end-of-round if discarded) — deferred.
+    // blue / gold / purple seals are end-of-blind / on-play / on-discard effects and do not
+    // affect the scoring fold — they're handled in run.ts:
+    //   - blue:   levelUpHand on the last-scored hand type, fires in checkTransition
+    //   - gold:   +$3 if scored, fires in playHand right after the scoring fold
+    //   - purple: spawn a random Tarot, fires in discardCards
   }
 
   // Steel cards HELD in hand (not played) — each multiplies the running mult by ×1.5.
   // Apply AFTER the joker fold (Balatro's order), so track count now and fold in below.
   let steelHeldCount = 0;
   if (ctx?.handHeld) {
+    // Use the full `played` set (including face-down) so a face-down steel card in the play
+    // selection is still considered "played" and excluded from the held bonus.
     const playedIds = new Set(played.map((c) => c.id));
     for (const c of ctx.handHeld) {
       if (c.enhancement === "steel" && !playedIds.has(c.id)) steelHeldCount += 1;
@@ -279,9 +310,12 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
   // mult that exists at that joker's slot, so a ×Mult after +Mult scores higher.
   let chips = baseChips + scoringChips + modChips;
   let mult = (baseMult + modMult) * modXMult;
+  // PET-78 mult_add_next_hand tag: transient flat mult bonus, applied BEFORE jokers so
+  // their ×mult still multiplies it. One-shot consumption is handled by the caller.
+  mult += ctx?.nextHandMultBonus ?? 0;
   const jokerSteps: JokerStep[] = [];
   if (jokerIds.length > 0) {
-    const features = handFeatures(played);
+    const features = handFeatures(visible);
     for (const jid of jokerIds) {
       const def = JOKER_BY_ID.get(jid);
       if (!def) continue;
@@ -305,7 +339,7 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
           if (features[e.feature]) chips += e.chips;
           break;
         case "hand_size_mult":
-          if (played.length <= e.maxCards) mult += e.mult;
+          if (visible.length <= e.maxCards) mult += e.mult;
           break;
         case "per_face_chips":
           chips += scoredCards.filter((c) => c.rank >= 11 && c.rank <= 13).length * e.chips;
@@ -373,6 +407,43 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
             ...(dChips !== 0 ? { deltaChips: dChips } : {}),
             ...(dMult !== 0 ? { deltaMult: dMult } : {}),
           });
+        }
+      }
+      // Per-joker edition contribution applied AFTER the joker's own contribution, as a distinct
+      // animation step. negative is slot-only (no scoring effect), so it's not pushed here.
+      const edition = ctx?.jokerEditions?.[jid];
+      if (edition) {
+        const edBeforeChips = chips;
+        const edBeforeMult = mult;
+        switch (edition) {
+          case "foil":
+            chips += 50;
+            break;
+          case "holo":
+            mult += 10;
+            break;
+          case "poly":
+            mult *= 1.5;
+            break;
+          case "negative":
+            // Slot bonus only — no scoring effect.
+            break;
+        }
+        if (edition === "poly") {
+          if (mult !== edBeforeMult) {
+            jokerSteps.push({ jokerId: jid, name: `${def.name} [poly]`, xMult: 1.5 });
+          }
+        } else if (edition === "foil" || edition === "holo") {
+          const dChips = chips - edBeforeChips;
+          const dMult = mult - edBeforeMult;
+          if (dChips !== 0 || dMult !== 0) {
+            jokerSteps.push({
+              jokerId: jid,
+              name: `${def.name} [${edition}]`,
+              ...(dChips !== 0 ? { deltaChips: dChips } : {}),
+              ...(dMult !== 0 ? { deltaMult: dMult } : {}),
+            });
+          }
         }
       }
     }
