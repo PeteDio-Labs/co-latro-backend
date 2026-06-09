@@ -253,6 +253,9 @@ export function generateShop(run: RunState, rng: () => number = Math.random): Sh
     if (eligible.length > 0) {
       const pool = shuffle(eligible, rng);
       voucher = makeVoucherItem(pool[0]!, discountPct);
+      // PET-78 free_voucher tag: zero-cost voucher slot until the player actually buys it
+      // (persists through rerolls — Balatro behavior). Cleared in buyItem on success.
+      if (run.freeVoucherPending) voucher.cost = 0;
     }
   }
   const rerollCost = Math.max(1, REROLL_BASE_COST - effectiveRerollDiscount(run));
@@ -270,6 +273,8 @@ export function buyItem(run: RunState, itemId: unknown): void {
     run.money -= v.cost;
     run.vouchers.push(v.voucherId);
     run.shop.voucher = null;
+    // PET-78 free_voucher tag: consumed on a successful voucher purchase (regardless of cost).
+    run.freeVoucherPending = false;
     return;
   }
 

@@ -89,6 +89,8 @@ export interface ScoreContext {
   jokerStates?: Record<string, { counter: number }>;
   /** Cards still HELD in hand (not played) — steel enhancement reads this for x1.5 per steel held. */
   handHeld?: Card[];
+  /** Transient flat mult bonus consumed by the next scored hand (PET-78 mult_add_next_hand tag). */
+  nextHandMultBonus?: number;
 }
 
 /** One joker's contribution during scoring — drives the play-resolution animation. */
@@ -282,6 +284,9 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
   // mult that exists at that joker's slot, so a ×Mult after +Mult scores higher.
   let chips = baseChips + scoringChips + modChips;
   let mult = (baseMult + modMult) * modXMult;
+  // PET-78 mult_add_next_hand tag: transient flat mult bonus, applied BEFORE jokers so
+  // their ×mult still multiplies it. One-shot consumption is handled by the caller.
+  mult += ctx?.nextHandMultBonus ?? 0;
   const jokerSteps: JokerStep[] = [];
   if (jokerIds.length > 0) {
     const features = handFeatures(played);

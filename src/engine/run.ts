@@ -117,6 +117,18 @@ export interface RunState {
   discardsUsedThisBlind: number;
   /** Marker for gold-enhancement payout at round end (PET-75 reads this). */
   heldGoldRoundEnd: boolean;
+  /**
+   * Transient +mult bonus consumed by the next played hand (PET-78 mult_add_next_hand tag).
+   * Reset to 0 after each playHand scoring pass — applies to the very next hand only.
+   * Multiple tags stack additively before consumption.
+   */
+  nextHandMultBonus: number;
+  /**
+   * When true, the next voucher rolled in a shop is free (cost 0).
+   * Set by the PET-78 free_voucher tag; persists through rerolls (Balatro behavior)
+   * until the discounted voucher is actually bought.
+   */
+  freeVoucherPending: boolean;
 
   /**
    * Per-card modifier overlay persisted across shuffles.
@@ -352,6 +364,8 @@ export function startRun(difficulty: Difficulty, userId: string, deckId = "stand
     jokerStates: {},
     discardsUsedThisBlind: 0,
     heldGoldRoundEnd: false,
+    nextHandMultBonus: 0,
+    freeVoucherPending: false,
     deckEnhancements: {},
     openingPack: null,
     createdAt: now,
@@ -434,6 +448,7 @@ function scoreCtx(run: RunState): ScoreContext {
     money: run.money,
     jokerStates: run.jokerStates,
     handHeld: run.hand,
+    nextHandMultBonus: run.nextHandMultBonus,
   };
 }
 
@@ -474,6 +489,8 @@ export function playHand(
   if (run.currentBossEffect) applyBossEffect(run, "play");
 
   const breakdown = scoreHand(selected, scoreCtx(run));
+  // PET-78 mult_add_next_hand: one-shot transient bonus, consumed by this hand.
+  run.nextHandMultBonus = 0;
   run.totalScore += breakdown.score;
   run.handsRemaining -= 1;
 
@@ -672,8 +689,11 @@ function checkTransition(run: RunState, rng: () => number): void {
     run.pendingReward = breakdown.blindBase + breakdown.handsBonus + breakdown.interest;
     run.money += run.pendingReward;
     run.status = "shop";
-    run.shop = generateShop(run, rng);
+    // Fire on_shop_enter tags BEFORE generating the shop so flags they set
+    // (free_voucher → zero-cost voucher slot, extra_joker_now → joker excluded
+    // from the shop's joker pool) take effect on this shop's roll.
     applyTags(run, "on_shop_enter", rng);
+    run.shop = generateShop(run, rng);
   } else if (run.handsRemaining <= 0) {
     run.status = "lost_run";
   } else if (run.hand.length === 0 && run.deck.length === 0) {
@@ -724,10 +744,14 @@ function applyTags(run: RunState, trigger: TagTrigger, rng: () => number = Math.
         openPack(run, packId, ret);
         break;
       }
-      case "mult_add_next_hand":
+      case "mult_add_next_hand": {
+        // Transient +mult bonus consumed by the next played hand. Multiple tags stack.
+        run.nextHandMultBonus += effect.n;
+        break;
+      }
       case "free_voucher": {
-        // Deferred effects — transient hand bonus + free voucher land in a later pass.
-        // Consume the tag rather than block — these were already "rolled" off the skip.
+        // Next shop's voucher slot rolls free (cost 0). Persists through reroll until bought.
+        run.freeVoucherPending = true;
         break;
       }
       default: {
