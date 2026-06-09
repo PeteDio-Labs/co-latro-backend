@@ -21,7 +21,9 @@ export async function freshDb(): Promise<DB> {
   shared ??= makeDb(url);
   migrated ??= runMigrations(shared);
   await migrated;
-  // CASCADE + RESTART IDENTITY: wipe sessions+users between tests without dropping the schema.
-  await shared.execute(sql`truncate table game_sessions, users restart identity cascade`);
+  // CASCADE + RESTART IDENTITY: wipe sessions+users+event_counts between tests without dropping the schema.
+  await shared.execute(
+    sql`truncate table game_sessions, users, event_counts restart identity cascade`,
+  );
   return shared;
 }

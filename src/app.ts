@@ -10,12 +10,16 @@ import { createAuthRouter } from "./api/auth.ts";
 import { createDecksRouter } from "./api/decks.ts";
 import { createRunRouter } from "./api/run.ts";
 import { createBearerAuth } from "./middleware/auth.ts";
+import { errorLogger, requestLogger } from "./middleware/logging.ts";
 import { GameError } from "./engine.ts";
 import type { DB } from "./db/client.ts";
 
 export function createApp(db: DB): Application {
   const app = express();
   app.use(express.json());
+  // PET-65: log every request (excluding /health). Sits after the body parser so any logged
+  // request id is stable, and BEFORE auth so anonymous/401 attempts are observable.
+  app.use(requestLogger());
 
   app.get("/health", (_req, res) => {
     res.json({ status: "UP" });
@@ -30,6 +34,9 @@ export function createApp(db: DB): Application {
   app.use((_req: Request, res: Response) => {
     res.status(404).json({ error: "not_found", message: "Route not found" });
   });
+
+  // Log thrown errors before the centralized handler responds (PET-65).
+  app.use(errorLogger());
 
   // Centralized error handler. GameError carries its own HTTP status + machine code.
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
