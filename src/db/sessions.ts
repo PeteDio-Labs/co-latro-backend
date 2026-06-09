@@ -41,6 +41,8 @@ function normalizeRun(state: RunState): RunState {
   // PET-78 tag effects — older saves predate these transient run-state slots.
   s.nextHandMultBonus ??= 0;
   s.freeVoucherPending ??= false;
+  // PET-67: per-run hand size offset (Ouija -1, future buffs +1). Older saves predate this.
+  s.handSizeOffset ??= 0;
   // PET-70 pack flow — older saves predate the openingPack field.
   s.openingPack ??= null;
   // PET-75 card modifier overlay — older saves predate this.

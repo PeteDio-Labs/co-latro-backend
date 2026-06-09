@@ -44,8 +44,12 @@ export type ConsumableEffect =
   | { kind: "incantation"; destroy: number; add: number }
   /** Sigil: convert every card currently in hand to a single random suit (persisted in deckComposition). */
   | { kind: "suit_convert_hand" }
-  /** Ouija: convert every card currently in hand to a single random rank (persisted in deckComposition). */
-  | { kind: "rank_convert_hand" }
+  /**
+   * Ouija: convert every card currently in hand to a single random rank (persisted in
+   * deckComposition). Optional `handSizeDelta` shifts the run's permanent handSizeOffset
+   * by that amount (Ouija: -1) — applied AFTER the rank conversion.
+   */
+  | { kind: "rank_convert_hand"; handSizeDelta?: number }
   /** Immolate: destroy 5 random hand cards + gain $20. */
   | { kind: "immolate"; destroy: number; money: number }
   /** Wraith: gain a random Rare joker, then set money to 0 (downside). */
@@ -305,10 +309,10 @@ export const CONSUMABLES: ConsumableDef[] = [
   {
     id: "ouija",
     name: "Ouija",
-    description: "Converts all cards in hand to a single random rank",
+    description: "Converts all cards in hand to a single random rank, -1 hand size",
     kind: "spectral",
     cost: 4,
-    effect: { kind: "rank_convert_hand" },
+    effect: { kind: "rank_convert_hand", handSizeDelta: -1 },
   },
   {
     id: "ectoplasm",

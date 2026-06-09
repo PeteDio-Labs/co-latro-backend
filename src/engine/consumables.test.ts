@@ -41,6 +41,7 @@ function makeRun(over: Partial<RunState> & { hand: Card[] }): RunState {
     heldGoldRoundEnd: false,
     nextHandMultBonus: 0,
     freeVoucherPending: false,
+    handSizeOffset: 0,
     deckEnhancements: {},
     openingPack: null,
     createdAt: 0,
@@ -286,7 +287,7 @@ describe("useConsumable — spectrals (deck mutations)", () => {
     expect(run.deckComposition.includes("6C")).toBe(true);
   });
 
-  it("Ouija converts every card in hand to a single random rank", () => {
+  it("Ouija converts every card in hand to a single random rank AND shrinks handSizeOffset by 1", () => {
     const run = makeRun({ hand: cards("2C 3D 4H 5S") });
     const id = giveTarot(run, "ouija", "inst-ou");
     // rng = 0 → first rank in [2..14] = 2.
@@ -294,6 +295,15 @@ describe("useConsumable — spectrals (deck mutations)", () => {
     for (const card of run.hand) {
       expect(card.rank).toBe(2);
     }
+    // Ouija also subtracts 1 from the run's permanent hand size (PET-67).
+    expect(run.handSizeOffset).toBe(-1);
+  });
+
+  it("Ouija on an empty hand still applies the -1 hand-size downside", () => {
+    const run = makeRun({ hand: [] });
+    const id = giveTarot(run, "ouija", "inst-ou2");
+    useConsumable(run, id, undefined, () => 0);
+    expect(run.handSizeOffset).toBe(-1);
   });
 });
 

@@ -58,6 +58,7 @@ function bossRunBase(over: Partial<RunState> = {}): RunState {
     heldGoldRoundEnd: false,
     nextHandMultBonus: 0,
     freeVoucherPending: false,
+    handSizeOffset: 0,
     openingPack: null,
     createdAt: 0,
     updatedAt: 0,

@@ -15,6 +15,8 @@ import {
 import { cards, withMod, card as cardOne } from "../testkit.ts";
 import { faceCode, standardFaces } from "../cards.ts";
 import { defaultHandLevels } from "../scoring.ts";
+import { effectiveHandSize } from "./effectives.ts";
+import { HAND_SIZE } from "../difficulty.ts";
 
 function runWith(over: Partial<RunState> & { hand: RunState["hand"] }): RunState {
   return {
@@ -51,6 +53,7 @@ function runWith(over: Partial<RunState> & { hand: RunState["hand"] }): RunState
     heldGoldRoundEnd: false,
     nextHandMultBonus: 0,
     freeVoucherPending: false,
+    handSizeOffset: 0,
     openingPack: null,
     deckEnhancements: {},
     createdAt: 0,
@@ -546,3 +549,63 @@ function seqRng(...values: number[]): () => number {
   let i = 0;
   return () => values[i++ % values.length]!;
 }
+describe("effectiveHandSize (PET-67)", () => {
+  it("defaults to HAND_SIZE when no vouchers and no offset", () => {
+    const run = runWith({ hand: [] });
+    expect(HAND_SIZE).toBe(8);
+    expect(effectiveHandSize(run)).toBe(8);
+  });
+
+  it("Hieroglyph voucher (+1 hand_size) flows through", () => {
+    const run = runWith({ hand: [], vouchers: ["hieroglyph"] });
+    expect(effectiveHandSize(run)).toBe(9);
+  });
+
+  it("Ouija's handSizeOffset (-1) is reflected", () => {
+    const run = runWith({ hand: [], handSizeOffset: -1 });
+    expect(effectiveHandSize(run)).toBe(7);
+  });
+
+  it("Hieroglyph (+1) and Ouija (-1) stack to the base size", () => {
+    const run = runWith({ hand: [], vouchers: ["hieroglyph"], handSizeOffset: -1 });
+    expect(effectiveHandSize(run)).toBe(8);
+  });
+
+  it("floored at 1 — a stacked downside can never produce 0", () => {
+    const run = runWith({ hand: [], handSizeOffset: -100 });
+    expect(effectiveHandSize(run)).toBe(1);
+  });
+
+  it("startBlind deals effectiveHandSize cards, not the bare constant", () => {
+    // Hieroglyph: 8 + 1 = 9; assert the initial deal pulls 9.
+    const run = startRun("medium", "u1");
+    run.vouchers.push("hieroglyph");
+    startBlind(run);
+    expect(run.hand.length).toBe(9);
+    expect(run.deck.length).toBe(52 - 9);
+  });
+
+  it("startBlind with Ouija offset deals 7", () => {
+    const run = startRun("medium", "u1");
+    run.handSizeOffset = -1;
+    startBlind(run);
+    expect(run.hand.length).toBe(7);
+    expect(run.deck.length).toBe(52 - 7);
+  });
+
+  it("Ouija mid-blind: current hand isn't shrunk; NEXT play refills to the new (smaller) size", () => {
+    // 8 cards in hand, plenty in deck; Ouija shifts offset to -1 but does NOT remove a card.
+    const handCards = cards("2C 3D 4H 5S 6C 7D 8H 9S");
+    const deckCards = cards("TC JD QH KS AC 2D 3H 4S");
+    const run = runWith({ hand: handCards, deck: deckCards, handsRemaining: 3 });
+    run.consumables.push({ id: "ouija-1", defId: "ouija" });
+    useConsumable(run, "ouija-1", undefined, () => 0); // deterministic rng
+    expect(run.handSizeOffset).toBe(-1);
+    expect(run.hand.length).toBe(8); // not retroactively shrunk
+    // Next play removes 2 and refills to effectiveHandSize=7 (so draws 1 not 2).
+    const deckBefore = run.deck.length;
+    playHand(run, [run.hand[0]!.id, run.hand[1]!.id]);
+    expect(run.hand.length).toBe(7);
+    expect(run.deck.length).toBe(deckBefore - 1); // only 1 drawn, not 2
+  });
+});

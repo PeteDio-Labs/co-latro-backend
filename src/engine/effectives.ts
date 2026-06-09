@@ -6,6 +6,7 @@
  * Centralizing the fold here means new voucher effects (PET-76) only ever touch vouchers.ts.
  */
 
+import { HAND_SIZE } from "../difficulty.ts";
 import { DEFAULT_INTEREST_CAP } from "./ante.ts";
 import { MAX_JOKERS } from "./jokers.ts";
 import type { RunState } from "./run.ts";
@@ -75,6 +76,16 @@ export function effectiveExtraHandSize(run: RunState): number {
   let n = 0;
   for (const e of effectsOf(run)) if (e.kind === "extra_hand_size") n += e.n;
   return n;
+}
+
+/**
+ * Effective hand size for the run: base HAND_SIZE + voucher extras + run-long offset
+ * (Ouija/Ectoplasm-style downsides land in run.handSizeOffset). Floored at 1 so a stacked
+ * downside can never deadlock a blind by dealing 0 cards.
+ */
+export function effectiveHandSize(run: RunState): number {
+  const total = HAND_SIZE + effectiveExtraHandSize(run) + (run.handSizeOffset ?? 0);
+  return Math.max(1, total);
 }
 
 /** Apply the shop discount to a raw cost, floored at 1 (free items would skip the buy path). */
