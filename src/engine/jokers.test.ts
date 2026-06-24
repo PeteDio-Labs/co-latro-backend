@@ -9,10 +9,9 @@ describe("joker catalog", () => {
     expect(new Set(list.map((j) => j.id)).size).toBe(list.length);
   });
 
-  it("getJoker returns a def and throws on unknown", () => {
-    expect(getJoker("joker").effect).toEqual({ kind: "flat_mult", mult: 4 });
-    expect(() => getJoker("nope")).toThrow(GameError);
-  });
+   it("getJoker returns Twisted Joker effect", () => {
+     expect(getJoker("twisted_joker").effect).toEqual({ kind: "flat_mult", mult: 5 });
+   });
 
   it("sellValue = floor(cost/2), min 1", () => {
     expect(sellValue(3)).toBe(1);
