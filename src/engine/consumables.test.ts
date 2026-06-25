@@ -438,6 +438,14 @@ describe("useConsumable — spectrals (selection-based)", () => {
     const spadeAces = run.hand.filter((c) => c.rank === 14 && c.suit === "spades");
     expect(spadeAces.length).toBe(3); // original + 2 clones
   });
+
+  it("Prism applies a Purple Seal to the selected card", () => {
+    const run = makeRun({ hand: cards("KH 2C 3D 4H 5S") });
+    const id = giveTarot(run, "prism", "inst-pris");
+    useConsumable(run, id, ["KH"]);
+    expect(run.hand.find((c) => c.id === "KH")!.seal).toBe("purple");
+    expect(run.deckEnhancements?.["KH"]?.seal).toBe("purple");
+  });
 });
 
 describe("useConsumable — spectrals (deferred placeholders)", () => {
