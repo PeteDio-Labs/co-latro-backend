@@ -92,11 +92,12 @@ export const JOKERS: JokerDef[] = [
   { id: "egg", name: "Egg", description: "Earn $1 at end of each hand played", cost: 4, rarity: "common", effect: { kind: "economy_per_hand_played", dollars: 1 } },
   { id: "delayed_gratification", name: "Delayed Gratification", description: "Earn $2 at end of each hand played", cost: 4, rarity: "common", effect: { kind: "economy_per_hand_played", dollars: 2 } },
   { id: "walkie_talkie", name: "Walkie Talkie", description: "+10 Chips and +4 Mult", cost: 4, rarity: "common", effect: { kind: "flat_chips_and_mult", chips: 10, mult: 4 } },
-   { id: "twisted_joker", name: "Twisted Joker", description: "+5 Mult", cost: 3, rarity: "common", effect: { kind: "flat_mult", mult: 5 } },
+  { id: "mr_bones", name: "Mr. Bones", description: "+5 Mult", cost: 5, rarity: "uncommon", effect: { kind: "flat_mult", mult: 5 } },
   { id: "photograph", name: "Photograph", description: "+10 Mult if hand has a Flush", cost: 5, rarity: "common", effect: { kind: "contains_mult", feature: "flush", mult: 10 } },
   { id: "bull", name: "Bull", description: "+2 Mult per $5 held", cost: 6, rarity: "uncommon", effect: { kind: "per_5_dollars_mult", mult: 2 } },
   { id: "fortune_teller", name: "Fortune Teller", description: "+1 Mult per blind cleared", cost: 6, rarity: "uncommon", effect: { kind: "scaling_per_blind_mult", mult: 1 } },
   { id: "stuntman", name: "Stuntman", description: "+250 Chips", cost: 7, rarity: "rare", effect: { kind: "flat_chips", chips: 250 } },
+  { id: "twisted_joker", name: "Twisted Joker", description: "+5 Mult", cost: 3, rarity: "common", effect: { kind: "flat_mult", mult: 5 } },
 ];
 
 const BY_ID = new Map(JOKERS.map((j) => [j.id, j]));
