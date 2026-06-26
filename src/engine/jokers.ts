@@ -99,6 +99,14 @@ export const JOKERS: JokerDef[] = [
   { id: "stuntman", name: "Stuntman", description: "+250 Chips", cost: 7, rarity: "rare", effect: { kind: "flat_chips", chips: 250 } },
   { id: "icy_joker", name: "Icy Joker", description: "+4 Mult per ♣ scored", cost: 5, rarity: "common", effect: { kind: "per_suit_mult", suit: "clubs", mult: 4 } },
   { id: "twisted_joker", name: "Twisted Joker", description: "+5 Mult", cost: 3, rarity: "common", effect: { kind: "flat_mult", mult: 5 } },
+  {
+    id: "devious_joker",
+    name: "Devious Joker",
+    description: "+100 Chips if hand has a Straight",
+    cost: 4,
+    rarity: "common",
+    effect: { kind: "contains_chips", feature: "straight", chips: 100 }
+  },
 ];
 
 const BY_ID = new Map(JOKERS.map((j) => [j.id, j]));
