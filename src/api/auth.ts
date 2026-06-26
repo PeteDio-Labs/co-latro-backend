@@ -4,7 +4,11 @@ import { eq } from "drizzle-orm";
 import { Router } from "express";
 import type { DB } from "../db/client.ts";
 import { users } from "../db/schema.ts";
-import { createBearerAuth, sha256hex } from "../middleware/auth.ts";
+import { TOKEN_TTL_SECONDS, createBearerAuth, sha256hex } from "../middleware/auth.ts";
+import { loginRateLimit } from "../middleware/rateLimit.ts";
+
+/** PET-60: display names are bounded — empty/whitespace and >40 chars are rejected (not silently truncated). */
+const MAX_NAME_LENGTH = 40;
 
 function generateToken(): string {
   const bytes = new Uint8Array(32);
@@ -16,35 +20,61 @@ function nowSec(): number {
   return Math.floor(Date.now() / 1000);
 }
 
-export function createAuthRouter(db: DB): Router {
+/** Auth-router knobs (forwarded from createApp; mainly for tests). */
+export interface AuthRouterOptions {
+  /** Override the per-IP login rate-limit max (defaults to config.loginRateLimitMax). */
+  loginRateLimitMax?: number;
+}
+
+export function createAuthRouter(db: DB, options: AuthRouterOptions = {}): Router {
   const router = Router();
   const bearerAuth = createBearerAuth(db);
 
   // Sign in by name: find-or-create the user, mint a fresh token (returned exactly once).
-  router.post("/login", async (req, res) => {
+  // Per-IP rate-limited (PET-60) to blunt brute-force / enumeration before it reaches the DB.
+  router.post("/login", loginRateLimit(options.loginRateLimitMax), async (req, res) => {
     const rawName = req.body?.name;
     if (typeof rawName !== "string" || !rawName.trim()) {
       res.status(400).json({ error: "invalid_name", message: "Enter a name" });
       return;
     }
-    const name = rawName.trim().slice(0, 40);
+    const name = rawName.trim();
+    // PET-60: reject over-long names with a clear error instead of truncating them.
+    if (name.length > MAX_NAME_LENGTH) {
+      res.status(400).json({
+        error: "invalid_name",
+        message: `Name must be ${MAX_NAME_LENGTH} characters or fewer`,
+      });
+      return;
+    }
     const token = generateToken();
     const tokenHash = sha256hex(token);
+    const tokenExpiresAt = nowSec() + TOKEN_TTL_SECONDS;
 
     const [existing] = await db.select().from(users).where(eq(users.name, name)).limit(1);
     let user: { id: string; name: string };
     if (existing) {
       await db
         .update(users)
-        .set({ tokenHash, lastSeenAt: nowSec() })
+        .set({ tokenHash, tokenExpiresAt, lastSeenAt: nowSec() })
         .where(eq(users.id, existing.id));
       user = { id: existing.id, name: existing.name };
     } else {
       const id = crypto.randomUUID();
-      await db.insert(users).values({ id, name, tokenHash });
+      await db.insert(users).values({ id, name, tokenHash, tokenExpiresAt });
       user = { id, name };
     }
     res.status(201).json({ token, user });
+  });
+
+  // Sign out: invalidate the current token server-side by rotating the hash to an unguessable,
+  // already-expired value (the unique tokenHash column forbids NULL/duplicate, so we don't clear it).
+  router.post("/logout", bearerAuth, async (req, res) => {
+    await db
+      .update(users)
+      .set({ tokenHash: sha256hex(generateToken()), tokenExpiresAt: nowSec() - 1 })
+      .where(eq(users.id, req.userId!));
+    res.status(204).end();
   });
 
   // Resolve the current user from the Bearer token.
