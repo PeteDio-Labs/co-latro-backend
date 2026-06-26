@@ -111,6 +111,13 @@ describe("useConsumable — enhancements", () => {
     useConsumable(run, id, ["AH"]);
     expect(run.hand.find((c) => c.id === "AH")!.enhancement).toBe("gold");
   });
+
+  it("The Pope applies Gold to 1 selected card", () => {
+    const run = makeRun({ hand: cards("AH AD AC AS KH") });
+    const id = giveTarot(run, "the_pope");
+    useConsumable(run, id, ["KH"]);
+    expect(run.hand.find((c) => c.id === "KH")!.enhancement).toBe("gold");
+  });
 });
 
 describe("useConsumable — money", () => {
