@@ -72,6 +72,19 @@ describe("CONSUMABLES catalog", () => {
       expect(t.kind).toBe("tarot");
     }
   });
+
+it('the_reconciler_probe is in the catalog', () => {
+  const tarot = getTarotById('the_reconciler_probe');
+  expect(tarot).toEqual({
+    kind: 'tarot',
+    id: 'the_reconciler_probe',
+    name: 'Reconciler Probe',
+    cost: 3,
+    needsSelection: { min: 2, max: 2, from: 'hand' },
+    effect: { kind: 'enhance_selected', enhancement: 'bonus', count: 2 },
+    description: 'Validation fixture (PET-105)',
+  });
+});
 });
 
 describe("useConsumable — enhancements", () => {
