@@ -64,9 +64,9 @@ function giveTarot(run: RunState, defId: string, instId = "inst-1"): string {
 }
 
 describe("CONSUMABLES catalog", () => {
-  it("ships the 17 tarot majors, all tarot kind, cost 3", () => {
+  it("ships the 18 tarot majors, all tarot kind, cost 3", () => {
     const tarots = [...CONSUMABLE_BY_ID.values()].filter((c) => c.kind === "tarot");
-    expect(tarots.length).toBe(17);
+    expect(tarots.length).toBe(18);
     for (const t of tarots) {
       expect(t.cost).toBe(3);
       expect(t.kind).toBe("tarot");
@@ -110,6 +110,13 @@ describe("useConsumable — enhancements", () => {
     const id = giveTarot(run, "the_devil");
     useConsumable(run, id, ["AH"]);
     expect(run.hand.find((c) => c.id === "AH")!.enhancement).toBe("gold");
+  });
+
+  it("The Pope applies Gold to 1 selected card", () => {
+    const run = makeRun({ hand: cards("AH AD AC AS KH") });
+    const id = giveTarot(run, "the_pope");
+    useConsumable(run, id, ["KH"]);
+    expect(run.hand.find((c) => c.id === "KH")!.enhancement).toBe("gold");
   });
 });
 
