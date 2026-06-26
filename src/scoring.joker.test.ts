@@ -16,6 +16,11 @@ describe("joker effects", () => {
     expect(scoreHand(cards("2H 5H 9H JH KH"), ctx(["lusty_joker"])).score).toBe(1349);
   });
 
+  it("per_suit_mult (Icy Joker): flush of 5 clubs, +4 Mult each", () => {
+    // (35 + 2+5+9+10+10) × (4 + 5×4) = 71 × 24 = 1704
+    expect(scoreHand(cards("2C 5C 9C JC KC"), ctx(["icy_joker"])).score).toBe(1704);
+  });
+
   it("contains_mult (Jolly): +8 Mult on a pair", () => {
     expect(scoreHand(cards("KH KS 3D 7C 9S"), ctx(["jolly_joker"])).score).toBe(300); // 30 × (2+8)
   });
