@@ -98,6 +98,7 @@ export const JOKERS: JokerDef[] = [
   { id: "fortune_teller", name: "Fortune Teller", description: "+1 Mult per blind cleared", cost: 6, rarity: "uncommon", effect: { kind: "scaling_per_blind_mult", mult: 1 } },
   { id: "stuntman", name: "Stuntman", description: "+250 Chips", cost: 7, rarity: "rare", effect: { kind: "flat_chips", chips: 250 } },
   { id: "icy_joker", name: "Icy Joker", description: "+4 Mult per ♣ scored", cost: 5, rarity: "common", effect: { kind: "per_suit_mult", suit: "clubs", mult: 4 } },
+  { id: "twisted_joker", name: "Twisted Joker", description: "+5 Mult", cost: 3, rarity: "common", effect: { kind: "flat_mult", mult: 5 } },
 ];
 
 const BY_ID = new Map(JOKERS.map((j) => [j.id, j]));

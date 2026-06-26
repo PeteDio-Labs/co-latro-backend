@@ -14,6 +14,10 @@ describe("joker catalog", () => {
     expect(() => getJoker("nope")).toThrow(GameError);
   });
 
+  it("getJoker returns Twisted Joker effect", () => {
+    expect(getJoker("twisted_joker").effect).toEqual({ kind: "flat_mult", mult: 5 });
+  });
+
   it("sellValue = floor(cost/2), min 1", () => {
     expect(sellValue(3)).toBe(1);
     expect(sellValue(5)).toBe(2);
