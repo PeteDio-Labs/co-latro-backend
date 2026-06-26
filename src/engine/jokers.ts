@@ -116,6 +116,22 @@ export const JOKERS: JokerDef[] = [
     effect: { kind: "contains_chips", feature: "three_of_a_kind", chips: 100 }
   },
   {
+    id: "sock_and_buskin",
+    name: "Sock and Buskin",
+    description: "Face cards score twice",
+    cost: 6,
+    rarity: "uncommon",
+    effect: { kind: "retrigger_face" }
+  },
+  {
+    id: "the_trio",
+    name: "The Trio",
+    description: "×3 Mult if hand has Three of a Kind",
+    cost: 8,
+    rarity: "rare",
+    effect: { kind: "x_mult_contains", feature: "three_of_a_kind", xMult: 3 }
+  },
+  {
     id: "the_order",
     name: "The Order",
     description: "×3 Mult if hand has a Straight",
