@@ -64,9 +64,9 @@ function giveTarot(run: RunState, defId: string, instId = "inst-1"): string {
 }
 
 describe("CONSUMABLES catalog", () => {
-  it("ships the 17 tarot majors, all tarot kind, cost 3", () => {
+  it("ships the 18 tarot majors, all tarot kind, cost 3", () => {
     const tarots = [...CONSUMABLE_BY_ID.values()].filter((c) => c.kind === "tarot");
-    expect(tarots.length).toBe(17);
+    expect(tarots.length).toBe(18);
     for (const t of tarots) {
       expect(t.cost).toBe(3);
       expect(t.kind).toBe("tarot");
