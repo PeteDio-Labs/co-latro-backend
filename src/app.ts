@@ -12,10 +12,20 @@ import { createRunRouter } from "./api/run.ts";
 import { createBearerAuth } from "./middleware/auth.ts";
 import { errorLogger, requestLogger } from "./middleware/logging.ts";
 import { GameError } from "./engine.ts";
+import { config } from "./config.ts";
 import type { DB } from "./db/client.ts";
 
-export function createApp(db: DB): Application {
+/** Options for tuning the app at construction (mainly for tests). */
+export interface AppOptions {
+  /** Override the per-IP login rate-limit max (defaults to config.loginRateLimitMax). */
+  loginRateLimitMax?: number;
+}
+
+export function createApp(db: DB, options: AppOptions = {}): Application {
   const app = express();
+  // PET-60: behind a proxy, trust X-Forwarded-For so req.ip is the real client (the login
+  // rate-limiter keys on it). Configured via TRUST_PROXY; defaults to false (direct/local).
+  app.set("trust proxy", config.trustProxy);
   app.use(express.json());
   // PET-65: log every request (excluding /health). Sits after the body parser so any logged
   // request id is stable, and BEFORE auth so anonymous/401 attempts are observable.
@@ -26,7 +36,7 @@ export function createApp(db: DB): Application {
   });
 
   // /api/auth/login is the only unauthenticated route; everything under /api/run requires a token.
-  app.use("/api/auth", createAuthRouter(db));
+  app.use("/api/auth", createAuthRouter(db, options));
   app.use("/api/decks", createBearerAuth(db), createDecksRouter());
   app.use("/api/run", createBearerAuth(db), createRunRouter(db));
 

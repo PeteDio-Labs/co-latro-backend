@@ -1,14 +1,20 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { eq } from "drizzle-orm";
 import type { Server } from "node:http";
 import { createApp } from "../app.ts";
+import type { DB } from "../db/client.ts";
 import { freshDb } from "../db/testdb.ts";
+import { users } from "../db/schema.ts";
 
 let server: Server;
 let base: string;
+let db: DB;
 
 beforeAll(async () => {
-  const db = await freshDb(); // migrated + truncated Postgres
-  server = createApp(db).listen(0) as unknown as Server;
+  db = await freshDb(); // migrated + truncated Postgres
+  // This suite logs in many users from one loopback IP — lift the per-IP login cap so the
+  // brute-force limiter (exercised separately below) doesn't throttle unrelated cases.
+  server = createApp(db, { loginRateLimitMax: 10_000 }).listen(0) as unknown as Server;
   const addr = server.address();
   const port = typeof addr === "object" && addr ? addr.port : 0;
   base = `http://localhost:${port}`;
@@ -61,6 +67,89 @@ describe("auth", () => {
     const u2 = (await (await fetch(`${base}/api/auth/me`, { headers: authed(t2) })).json()) as { user: { id: string } };
     expect(u2.user.id).toBe(u1.user.id); // same user
     expect((await fetch(`${base}/api/auth/me`, { headers: authed(t1) })).status).toBe(401); // old token dead
+  });
+
+  // PET-60: name validation — empty/whitespace and >40 chars are rejected (not silently truncated).
+  it("rejects empty / whitespace-only / missing names with 400 invalid_name", async () => {
+    for (const body of [{ name: "" }, { name: "   " }, { name: 123 }, {}]) {
+      const r = await fetch(`${base}/api/auth/login`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      expect(r.status).toBe(400);
+      expect(((await r.json()) as { error: string }).error).toBe("invalid_name");
+    }
+  });
+
+  it("rejects names longer than 40 chars with 400 (no silent truncation)", async () => {
+    const r = await fetch(`${base}/api/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "x".repeat(41) }),
+    });
+    expect(r.status).toBe(400);
+    expect(((await r.json()) as { error: string }).error).toBe("invalid_name");
+    // and the over-long name was NOT created
+    const rows = await db.select().from(users).where(eq(users.name, "x".repeat(40)));
+    expect(rows.length).toBe(0);
+  });
+
+  it("accepts a name of exactly 40 chars (boundary)", async () => {
+    const name = "y".repeat(40);
+    const r = await fetch(`${base}/api/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    expect(r.status).toBe(201);
+    expect(((await r.json()) as { user: { name: string } }).user.name).toBe(name);
+  });
+
+  // PET-60: logout invalidates the current token server-side.
+  it("logout invalidates the token (204; old token then 401), and a fresh login works", async () => {
+    const t = await login("Quinn");
+    expect((await fetch(`${base}/api/auth/me`, { headers: authed(t) })).status).toBe(200);
+
+    const out = await fetch(`${base}/api/auth/logout`, { method: "POST", headers: authed(t) });
+    expect(out.status).toBe(204);
+
+    expect((await fetch(`${base}/api/auth/me`, { headers: authed(t) })).status).toBe(401); // token dead
+    expect((await fetch(`${base}/api/auth/logout`, { method: "POST", headers: authed(t) })).status).toBe(401);
+
+    const t2 = await login("Quinn"); // can sign back in
+    expect((await fetch(`${base}/api/auth/me`, { headers: authed(t2) })).status).toBe(200);
+  });
+
+  // PET-60: an expired token is rejected like an invalid one.
+  it("rejects an expired token with 401 token_expired", async () => {
+    const t = await login("Rex");
+    expect((await fetch(`${base}/api/auth/me`, { headers: authed(t) })).status).toBe(200);
+
+    // Force the token into the past directly in the DB.
+    await db
+      .update(users)
+      .set({ tokenExpiresAt: Math.floor(Date.now() / 1000) - 10 })
+      .where(eq(users.name, "Rex"));
+
+    const r = await fetch(`${base}/api/auth/me`, { headers: authed(t) });
+    expect(r.status).toBe(401);
+    expect(((await r.json()) as { error: string }).error).toBe("token_expired");
+    // expiry also gates the rest of the API, not just /me
+    expect((await fetch(`${base}/api/run/active`, { headers: authed(t) })).status).toBe(401);
+  });
+
+  it("login sets a future token expiry (~30 days out)", async () => {
+    await login("Sky");
+    const [row] = await db
+      .select({ exp: users.tokenExpiresAt })
+      .from(users)
+      .where(eq(users.name, "Sky"))
+      .limit(1);
+    const now = Math.floor(Date.now() / 1000);
+    expect(row!.exp).not.toBeNull();
+    expect(row!.exp!).toBeGreaterThan(now + 29 * 24 * 60 * 60);
+    expect(row!.exp!).toBeLessThanOrEqual(now + 30 * 24 * 60 * 60 + 5);
   });
 });
 
@@ -292,5 +381,40 @@ describe("jokers (API shape + guards)", () => {
       body: JSON.stringify({ jokerId: "joker", dir: "left" }),
     });
     expect(reorder.status).toBe(404);
+  });
+});
+
+// PET-60: brute-force guard on /api/auth/login. Own server with a tiny per-IP cap so we can trip it
+// deterministically without flooding (all test requests share the loopback IP → one bucket).
+describe("login rate limiting", () => {
+  let rlServer: Server;
+  let rlBase: string;
+
+  beforeAll(() => {
+    // Reuse the already-migrated shared db; this block only hits /login so no run state collides.
+    rlServer = createApp(db, { loginRateLimitMax: 3 }).listen(0) as unknown as Server;
+    const addr = rlServer.address();
+    const port = typeof addr === "object" && addr ? addr.port : 0;
+    rlBase = `http://localhost:${port}`;
+  });
+
+  afterAll(() => rlServer.close());
+
+  it("429s once an IP exceeds the per-minute login cap", async () => {
+    const attempt = (name: string) =>
+      fetch(`${rlBase}/api/auth/login`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+
+    // First 3 succeed (cap = 3), the 4th is rejected.
+    for (let i = 0; i < 3; i++) expect((await attempt(`RL${i}`)).status).toBe(201);
+
+    const limited = await attempt("RL3");
+    expect(limited.status).toBe(429);
+    const body = (await limited.json()) as { error: string };
+    expect(body.error).toBe("rate_limited");
+    expect(limited.headers.get("retry-after")).toBeTruthy();
   });
 });

@@ -12,6 +12,9 @@ export const users = pgTable("users", {
   id: text("id").primaryKey(), // crypto.randomUUID()
   name: text("name").notNull().unique(), // display label; identity, no password
   tokenHash: text("token_hash").notNull().unique(), // sha256(token) hex; raw token returned once at login
+  // PET-60: epoch seconds the current token stops being valid (set at login). Nullable so a
+  // user row can exist with no live token (after logout, which clears tokenHash + this).
+  tokenExpiresAt: bigint("token_expires_at", { mode: "number" }),
   createdAt: bigint("created_at", { mode: "number" }).notNull().default(epochDefault),
   lastSeenAt: bigint("last_seen_at", { mode: "number" }).notNull().default(epochDefault),
 });
