@@ -45,7 +45,8 @@ No response includes the hidden deck.
 
 | Method | Path | Body | Notes |
 | --- | --- | --- | --- |
-| POST | `/api/auth/login` | `{ name }` | Find-or-create; returns `{ token, user }`. |
+| POST | `/api/auth/login` | `{ name }` | Find-or-create; returns `{ token, user }`. Per-IP rate-limited (~10/min); name 1–40 chars; token expires in 30d. |
+| POST | `/api/auth/logout` | — | Invalidate the current token (204). |
 | GET | `/api/auth/me` | — | Resolve current user. |
 | GET | `/api/decks` | — | Preset deck catalog. |
 | GET | `/api/run/active` | — | Latest non-terminal run, or `null`. |

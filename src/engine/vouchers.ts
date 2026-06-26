@@ -111,6 +111,13 @@ export const VOUCHERS: VoucherDef[] = [
     cost: 10,
     effect: { kind: "extra_hand_size", n: 1 },
   },
+  {
+    id: "fortune_scale",
+    name: "Fortune Scale",
+    description: "Raises the max interest earned per round by $5",
+    cost: 10,
+    effect: { kind: "interest_cap_increase", extra: 5 },
+  },
 ];
 
 export const VOUCHER_BY_ID = new Map<string, VoucherDef>(VOUCHERS.map((v) => [v.id, v]));

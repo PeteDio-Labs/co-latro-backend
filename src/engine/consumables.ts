@@ -384,6 +384,15 @@ export const CONSUMABLES: ConsumableDef[] = [
     needsSelection: { min: 1, max: 1, from: "hand" },
     effect: { kind: "cryptid_duplicate", copies: 2 },
   },
+  {
+    id: "prism",
+    name: "Prism",
+    description: "Adds a Purple Seal to 1 selected card",
+    kind: "spectral",
+    cost: 4,
+    needsSelection: { min: 1, max: 1, from: "hand" },
+    effect: { kind: "seal_selected", seal: "purple", count: 1 },
+  },
 ];
 
 export const CONSUMABLE_BY_ID = new Map<string, ConsumableDef>(

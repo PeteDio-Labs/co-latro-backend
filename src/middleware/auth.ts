@@ -14,6 +14,9 @@ declare global {
   }
 }
 
+/** PET-60: tokens expire 30 days after they're minted; a 401 then forces a re-login. */
+export const TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
+
 export function sha256hex(token: string): string {
   return new Bun.CryptoHasher("sha256").update(token).digest("hex");
 }
@@ -31,7 +34,7 @@ export function createBearerAuth(db: DB) {
     }
     const hash = sha256hex(match[1]!.trim());
     const rows = await db
-      .select({ id: users.id })
+      .select({ id: users.id, tokenExpiresAt: users.tokenExpiresAt })
       .from(users)
       .where(eq(users.tokenHash, hash))
       .limit(1);
@@ -40,10 +43,14 @@ export function createBearerAuth(db: DB) {
       res.status(401).json({ error: "invalid_token", message: "Session expired — sign in again" });
       return;
     }
-    await db
-      .update(users)
-      .set({ lastSeenAt: Math.floor(Date.now() / 1000) })
-      .where(eq(users.id, row.id));
+    // PET-60: an expired token is treated exactly like an invalid one — re-login required.
+    // (tokenExpiresAt is nullable for rows that predate this column / have no live token.)
+    const now = Math.floor(Date.now() / 1000);
+    if (row.tokenExpiresAt != null && row.tokenExpiresAt <= now) {
+      res.status(401).json({ error: "token_expired", message: "Session expired — sign in again" });
+      return;
+    }
+    await db.update(users).set({ lastSeenAt: now }).where(eq(users.id, row.id));
     req.userId = row.id;
     next();
   };

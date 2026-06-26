@@ -42,6 +42,13 @@ describe("vouchers — effective caps", () => {
     run.vouchers.push("seed_money");
     expect(effectiveInterestCap(run)).toBe(10);
   });
+
+  it("Fortune Scale raises effectiveInterestCap 5 → 10", () => {
+    const run = startRun("medium", "u");
+    expect(effectiveInterestCap(run)).toBe(5);
+    run.vouchers.push("fortune_scale");
+    expect(effectiveInterestCap(run)).toBe(10);
+  });
 });
 
 describe("vouchers — startBlind grants", () => {
@@ -105,6 +112,7 @@ describe("vouchers — shop slot gating", () => {
       "clearance_sale",
       "liquidation",
       "hieroglyph",
+      "fortune_scale",
     ];
     const shop = generateShop(run, () => 0.5);
     expect(shop.voucher).toBeNull();

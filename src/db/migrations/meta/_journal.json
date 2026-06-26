@@ -15,6 +15,13 @@
       "when": 1780752743511,
       "tag": "0001_event_counts",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1782496493135,
+      "tag": "0002_solid_wild_child",
+      "breakpoints": true
     }
   ]
 }
