@@ -139,6 +139,14 @@ export const JOKERS: JokerDef[] = [
     rarity: "rare",
     effect: { kind: "x_mult_contains", feature: "straight", xMult: 3 }
   },
+  {
+    id: "the_tribe",
+    name: "The Tribe",
+    description: "×2 Mult if hand has a Flush",
+    cost: 8,
+    rarity: "rare",
+    effect: { kind: "x_mult_contains", feature: "flush", xMult: 2 }
+  },
 ];
 
 const BY_ID = new Map(JOKERS.map((j) => [j.id, j]));
