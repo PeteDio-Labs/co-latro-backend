@@ -77,6 +77,23 @@ export function createAuthRouter(db: DB, options: AuthRouterOptions = {}): Route
   const adminInvitesAuth = options.adminInvitesAuth ?? config.adminInvitesAuth;
   const inviteGateOn = adminInvitesUrl !== "";
 
+  // PET-203 (F8): fail CLOSED on a config footgun. An unset COLATRO_ADMIN_INVITES_URL silently
+  // disables the gate (open public signup) with only Cloudflare Access left — and the origin is
+  // LAN-reachable past the edge. In production we refuse to boot rather than come up wide open;
+  // an operator who genuinely wants open signup (the PET-99 interim) must opt in explicitly.
+  // `options.adminInvitesUrl !== undefined` exempts tests, which construct the app directly.
+  if (
+    config.env === "production" &&
+    !inviteGateOn &&
+    options.adminInvitesUrl === undefined &&
+    process.env.COLATRO_ALLOW_OPEN_SIGNUP !== "1"
+  ) {
+    throw new Error(
+      "Refusing to start: invite gate is OFF in production (COLATRO_ADMIN_INVITES_URL is empty). " +
+        "Configure the admin invites service, or set COLATRO_ALLOW_OPEN_SIGNUP=1 to allow open signup deliberately.",
+    );
+  }
+
   // Sign in by name: find-or-create the user, mint a fresh token (returned exactly once).
   // Per-IP rate-limited (PET-60) to blunt brute-force / enumeration before it reaches the DB.
   router.post("/login", loginRateLimit(options.loginRateLimitMax), async (req, res) => {
@@ -94,6 +111,15 @@ export function createAuthRouter(db: DB, options: AuthRouterOptions = {}): Route
       });
       return;
     }
+    // PET-203 (F11): reject control characters (incl. NUL / CR / LF). Names are stored, echoed to
+    // other surfaces (admin `used_by`, structured logs), and rendered — control chars enable log
+    // injection / display spoofing. Printable text (letters, digits, spaces, punctuation, emoji,
+    // CJK) is allowed; the frontend escapes on render as defense-in-depth.
+    // eslint-disable-next-line no-control-regex
+    if (/[\x00-\x1F\x7F]/.test(name)) {
+      res.status(400).json({ error: "invalid_name", message: "Name contains invalid characters" });
+      return;
+    }
     const token = generateToken();
     const tokenHash = sha256hex(token);
     const tokenExpiresAt = nowSec() + TOKEN_TTL_SECONDS;
@@ -108,26 +134,33 @@ export function createAuthRouter(db: DB, options: AuthRouterOptions = {}): Route
       user = { id: existing.id, name: existing.name };
     } else {
       // PET-201: a NEW account needs a valid invite when the gate is on (existing users above
-      // are never gated). The admin service claims+consumes the code atomically; we create the
-      // account only on ok:true. Rate-limited upstream (PET-60); the edge gate is Cloudflare
-      // Access (PET-58) — this is the app-level half.
+      // are never gated). Rate-limited upstream (PET-60); the edge gate is Cloudflare Access
+      // (PET-58) — this is the app-level half.
+      const code =
+        inviteGateOn && typeof req.body?.inviteCode === "string" ? req.body.inviteCode.trim() : "";
+      if (inviteGateOn && !code) {
+        res.status(403).json({
+          error: "invite_required",
+          message: "This prealpha is invite-only — enter your invite code.",
+        });
+        return;
+      }
+      // PET-203 (F5): create the row FIRST, then consume the invite — the local insert is reliable
+      // while the remote claim is the failure-prone step. The previous order (consume → insert)
+      // burned the single-use code with no rollback if the insert failed (the admin only un-claims
+      // on expiry), self-DoSing the invite. Now: if the claim is rejected we delete the just-created
+      // row, so a bad/used code leaves nothing behind, and a successful claim is the LAST thing that
+      // can fail — nothing after it can orphan a consumed code.
+      const id = crypto.randomUUID();
+      await db.insert(users).values({ id, name, tokenHash, tokenExpiresAt });
       if (inviteGateOn) {
-        const code = typeof req.body?.inviteCode === "string" ? req.body.inviteCode.trim() : "";
-        if (!code) {
-          res.status(403).json({
-            error: "invite_required",
-            message: "This prealpha is invite-only — enter your invite code.",
-          });
-          return;
-        }
         const verdict = await validateInvite(adminInvitesUrl, adminInvitesAuth, code, name);
         if (!verdict.ok) {
+          await db.delete(users).where(eq(users.id, id)); // roll back the un-invited account
           res.status(403).json({ error: "invite_required", message: verdict.message });
           return;
         }
       }
-      const id = crypto.randomUUID();
-      await db.insert(users).values({ id, name, tokenHash, tokenExpiresAt });
       user = { id, name };
     }
     res.status(201).json({ token, user });
