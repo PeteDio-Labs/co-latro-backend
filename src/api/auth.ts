@@ -21,24 +21,61 @@ function nowSec(): number {
   return Math.floor(Date.now() / 1000);
 }
 
+/**
+ * PET-201: validate + atomically consume an invite via the co-latro-admin `invites` function
+ * (POST {base}/validate {code, user}). Returns ok:true only when the admin claimed the code.
+ * Maps the admin's already-used (409) / expired (410) / unknown (404) into player-facing
+ * messages, and FAILS CLOSED on any transport error — a configured gate must not let people in
+ * when the validator is unreachable. `auth` is the faasd gateway basic-auth ("user:pass"), optional.
+ */
+async function validateInvite(
+  baseUrl: string,
+  auth: string,
+  code: string,
+  user: string,
+): Promise<{ ok: boolean; message: string }> {
+  try {
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (auth) headers.authorization = "Basic " + Buffer.from(auth).toString("base64");
+    const r = await fetch(`${baseUrl}/validate`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ code, user }),
+      signal: AbortSignal.timeout(5000),
+    });
+    const body = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    if (r.ok && body.ok) return { ok: true, message: "" };
+    const message =
+      body.error === "already used" ? "That invite code has already been used."
+        : body.error === "expired" ? "That invite code has expired."
+          : body.error === "unknown code" ? "That invite code isn't valid."
+            : "Invalid invite code.";
+    return { ok: false, message };
+  } catch {
+    return { ok: false, message: "Couldn't verify your invite right now — please try again shortly." };
+  }
+}
+
 /** Auth-router knobs (forwarded from createApp; mainly for tests). */
 export interface AuthRouterOptions {
   /** Override the per-IP login rate-limit max (defaults to config.loginRateLimitMax). */
   loginRateLimitMax?: number;
-  /** PET-59: override the invite gate (defaults to config.inviteCode / config.inviteAllowlist). */
-  inviteCode?: string;
-  inviteAllowlist?: string[];
+  /** PET-201: override the admin invites service (defaults to config.adminInvitesUrl / Auth). */
+  adminInvitesUrl?: string;
+  adminInvitesAuth?: string;
 }
 
 export function createAuthRouter(db: DB, options: AuthRouterOptions = {}): Router {
   const router = Router();
   const bearerAuth = createBearerAuth(db);
 
-  // PET-59: invite gate, resolved once at router construction. Options override config (tests).
-  // The gate is OFF unless a code or a non-empty allowlist is configured.
-  const inviteCode = options.inviteCode ?? config.inviteCode;
-  const inviteAllowlist = options.inviteAllowlist ?? config.inviteAllowlist;
-  const inviteGateOn = inviteCode !== "" || inviteAllowlist.length > 0;
+  // PET-201: invite gate, resolved once at router construction. Options override config (tests).
+  // Invites are issued + validated by the co-latro-admin `invites` function; the gate is OFF
+  // when adminInvitesUrl is empty (dev, and the interim before that fn is deployed — PET-99) —
+  // the site stays edge-gated by Cloudflare Access regardless.
+  const adminInvitesUrl = options.adminInvitesUrl ?? config.adminInvitesUrl;
+  const adminInvitesAuth = options.adminInvitesAuth ?? config.adminInvitesAuth;
+  const inviteGateOn = adminInvitesUrl !== "";
 
   // Sign in by name: find-or-create the user, mint a fresh token (returned exactly once).
   // Per-IP rate-limited (PET-60) to blunt brute-force / enumeration before it reaches the DB.
@@ -70,20 +107,22 @@ export function createAuthRouter(db: DB, options: AuthRouterOptions = {}): Route
         .where(eq(users.id, existing.id));
       user = { id: existing.id, name: existing.name };
     } else {
-      // PET-59: a NEW account needs an invite when the gate is on (existing users above are
-      // never gated). Allowed by an allowlist entry (case-insensitive) or a matching shared
-      // code in the request body. Rate-limited upstream (PET-60); the real edge gate is
-      // Cloudflare Access (PET-58) — this is the app-level half.
+      // PET-201: a NEW account needs a valid invite when the gate is on (existing users above
+      // are never gated). The admin service claims+consumes the code atomically; we create the
+      // account only on ok:true. Rate-limited upstream (PET-60); the edge gate is Cloudflare
+      // Access (PET-58) — this is the app-level half.
       if (inviteGateOn) {
-        const rawCode = req.body?.inviteCode;
-        const allowed =
-          inviteAllowlist.includes(name.toLowerCase()) ||
-          (inviteCode !== "" && typeof rawCode === "string" && rawCode === inviteCode);
-        if (!allowed) {
+        const code = typeof req.body?.inviteCode === "string" ? req.body.inviteCode.trim() : "";
+        if (!code) {
           res.status(403).json({
             error: "invite_required",
-            message: "This prealpha is invite-only — enter a valid invite code.",
+            message: "This prealpha is invite-only — enter your invite code.",
           });
+          return;
+        }
+        const verdict = await validateInvite(adminInvitesUrl, adminInvitesAuth, code, name);
+        if (!verdict.ok) {
+          res.status(403).json({ error: "invite_required", message: verdict.message });
           return;
         }
       }

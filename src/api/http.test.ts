@@ -419,56 +419,81 @@ describe("login rate limiting", () => {
   });
 });
 
-// PET-59: invite gate on NEW account creation. Own server configured with a code + a small
-// allowlist; the default suite server leaves the gate OFF, so existing tests are unaffected.
-describe("invite gate (PET-59)", () => {
+// PET-201: invite gate now validates against the co-latro-admin `invites` function. This server
+// is configured with an admin URL; the server's outbound /validate call is mocked (URL-matched)
+// so the test drives valid/used/unreachable outcomes. The default suite server leaves
+// adminInvitesUrl empty → gate OFF there, so the existing tests are unaffected.
+describe("invite gate (PET-201)", () => {
   let gServer: Server;
   let gBase: string;
-  const CODE = "let-me-in";
+  const ADMIN = "http://admin.invalid/function/invites";
+  const realFetch = globalThis.fetch;
+  // Per-test control of the mocked admin /validate response (keyed on the submitted code).
+  let adminReply: (code: string, user: string) => Response;
 
   beforeAll(() => {
-    gServer = createApp(db, {
-      loginRateLimitMax: 10_000,
-      inviteCode: CODE,
-      inviteAllowlist: ["vip"], // lowercased; matched case-insensitively
-    }).listen(0) as unknown as Server;
+    // Intercept ONLY the server's outbound call to the admin invites fn; the test's own calls
+    // to gBase use realFetch directly, so they're never intercepted.
+    globalThis.fetch = (async (input: Request | string | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.startsWith(ADMIN)) {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { code: string; user: string };
+        return adminReply(body.code, body.user);
+      }
+      return realFetch(input as Parameters<typeof fetch>[0], init);
+    }) as typeof fetch;
+    gServer = createApp(db, { loginRateLimitMax: 10_000, adminInvitesUrl: ADMIN }).listen(0) as unknown as Server;
     const addr = gServer.address();
     const port = typeof addr === "object" && addr ? addr.port : 0;
     gBase = `http://localhost:${port}`;
   });
 
-  afterAll(() => gServer.close());
+  afterAll(() => {
+    globalThis.fetch = realFetch;
+    gServer.close();
+  });
 
   const login = (body: Record<string, unknown>) =>
-    fetch(`${gBase}/api/auth/login`, {
+    realFetch(`${gBase}/api/auth/login`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
 
-  it("rejects a new account with no / wrong invite code (403 invite_required)", async () => {
-    const none = await login({ name: "Gatecrasher" });
-    expect(none.status).toBe(403);
-    expect(((await none.json()) as { error: string }).error).toBe("invite_required");
-
-    const wrong = await login({ name: "Gatecrasher", inviteCode: "nope" });
-    expect(wrong.status).toBe(403);
+  it("rejects a new account with no invite code (403 invite_required, no admin call)", async () => {
+    adminReply = () => { throw new Error("admin must not be called when no code is given"); };
+    const r = await login({ name: "Gatecrasher" });
+    expect(r.status).toBe(403);
+    expect(((await r.json()) as { error: string }).error).toBe("invite_required");
   });
 
-  it("creates a new account with a valid invite code (201)", async () => {
-    const r = await login({ name: "Invitee", inviteCode: CODE });
+  it("creates a new account when the admin claims the code (201)", async () => {
+    adminReply = (code) =>
+      code === "good" ? Response.json({ ok: true }) : Response.json({ ok: false, error: "unknown code" }, { status: 404 });
+    const r = await login({ name: "Invitee", inviteCode: "good" });
     expect(r.status).toBe(201);
     expect(((await r.json()) as { user: { name: string } }).user.name).toBe("Invitee");
   });
 
-  it("allows an allowlisted name without a code (case-insensitive)", async () => {
-    const r = await login({ name: "VIP" }); // allowlist holds "vip"
-    expect(r.status).toBe(201);
+  it("maps an already-used code to 403 (admin 409)", async () => {
+    adminReply = () => Response.json({ ok: false, error: "already used" }, { status: 409 });
+    const r = await login({ name: "LateComer", inviteCode: "burned" });
+    expect(r.status).toBe(403);
+    expect(((await r.json()) as { message: string }).message).toMatch(/already been used/i);
   });
 
-  it("never gates an EXISTING user (re-login needs no code)", async () => {
-    expect((await login({ name: "Returning", inviteCode: CODE })).status).toBe(201); // created
-    const again = await login({ name: "Returning" }); // existing → resolves, no code needed
+  it("fails closed when the admin service is unreachable (403)", async () => {
+    adminReply = () => { throw new Error("network down"); };
+    const r = await login({ name: "Unlucky", inviteCode: "whatever" });
+    expect(r.status).toBe(403);
+  });
+
+  it("never gates an EXISTING user (re-login makes no admin call)", async () => {
+    adminReply = (code) =>
+      code === "good" ? Response.json({ ok: true }) : Response.json({ ok: false, error: "unknown code" }, { status: 404 });
+    expect((await login({ name: "Returning", inviteCode: "good" })).status).toBe(201); // created
+    adminReply = () => { throw new Error("existing user must not hit the admin gate"); };
+    const again = await login({ name: "Returning" }); // existing → resolves, no code, no admin call
     expect(again.status).toBe(201);
   });
 });
