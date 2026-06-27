@@ -418,3 +418,57 @@ describe("login rate limiting", () => {
     expect(limited.headers.get("retry-after")).toBeTruthy();
   });
 });
+
+// PET-59: invite gate on NEW account creation. Own server configured with a code + a small
+// allowlist; the default suite server leaves the gate OFF, so existing tests are unaffected.
+describe("invite gate (PET-59)", () => {
+  let gServer: Server;
+  let gBase: string;
+  const CODE = "let-me-in";
+
+  beforeAll(() => {
+    gServer = createApp(db, {
+      loginRateLimitMax: 10_000,
+      inviteCode: CODE,
+      inviteAllowlist: ["vip"], // lowercased; matched case-insensitively
+    }).listen(0) as unknown as Server;
+    const addr = gServer.address();
+    const port = typeof addr === "object" && addr ? addr.port : 0;
+    gBase = `http://localhost:${port}`;
+  });
+
+  afterAll(() => gServer.close());
+
+  const login = (body: Record<string, unknown>) =>
+    fetch(`${gBase}/api/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  it("rejects a new account with no / wrong invite code (403 invite_required)", async () => {
+    const none = await login({ name: "Gatecrasher" });
+    expect(none.status).toBe(403);
+    expect(((await none.json()) as { error: string }).error).toBe("invite_required");
+
+    const wrong = await login({ name: "Gatecrasher", inviteCode: "nope" });
+    expect(wrong.status).toBe(403);
+  });
+
+  it("creates a new account with a valid invite code (201)", async () => {
+    const r = await login({ name: "Invitee", inviteCode: CODE });
+    expect(r.status).toBe(201);
+    expect(((await r.json()) as { user: { name: string } }).user.name).toBe("Invitee");
+  });
+
+  it("allows an allowlisted name without a code (case-insensitive)", async () => {
+    const r = await login({ name: "VIP" }); // allowlist holds "vip"
+    expect(r.status).toBe(201);
+  });
+
+  it("never gates an EXISTING user (re-login needs no code)", async () => {
+    expect((await login({ name: "Returning", inviteCode: CODE })).status).toBe(201); // created
+    const again = await login({ name: "Returning" }); // existing → resolves, no code needed
+    expect(again.status).toBe(201);
+  });
+});
