@@ -10,7 +10,10 @@ const epochDefault = sql`extract(epoch from now())::bigint`;
 
 export const users = pgTable("users", {
   id: text("id").primaryKey(), // crypto.randomUUID()
-  name: text("name").notNull().unique(), // display label; identity, no password
+  name: text("name").notNull().unique(), // username (case-sensitive, unique); also the display label
+  // PET-206: argon2id hash of the user's password (Bun.password). Set at signup; never nullable —
+  // every account is credentialed (the name-only find-or-create model was removed). Never returned.
+  passwordHash: text("password_hash").notNull(),
   tokenHash: text("token_hash").notNull().unique(), // sha256(token) hex; raw token returned once at login
   // PET-60: epoch seconds the current token stops being valid (set at login). Nullable so a
   // user row can exist with no live token (after logout, which clears tokenHash + this).

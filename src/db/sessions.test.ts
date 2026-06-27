@@ -7,7 +7,7 @@ import { gameSessions, users } from "./schema.ts";
 import { playHand, startBlind, startRun, type RunState } from "../engine/run.ts";
 
 async function seedUser(db: DB, id = "u1", name = "U1"): Promise<string> {
-  await db.insert(users).values({ id, name, tokenHash: `${name}-hash` });
+  await db.insert(users).values({ id, name, passwordHash: `${name}-pwhash`, tokenHash: `${name}-hash` });
   return id;
 }
 
