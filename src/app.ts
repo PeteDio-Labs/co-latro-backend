@@ -19,9 +19,9 @@ import type { DB } from "./db/client.ts";
 export interface AppOptions {
   /** Override the per-IP login rate-limit max (defaults to config.loginRateLimitMax). */
   loginRateLimitMax?: number;
-  /** PET-59: override the invite gate (defaults to config.inviteCode / config.inviteAllowlist). */
-  inviteCode?: string;
-  inviteAllowlist?: string[];
+  /** PET-201: override the admin invites service (defaults to config.adminInvitesUrl / Auth). */
+  adminInvitesUrl?: string;
+  adminInvitesAuth?: string;
 }
 
 export function createApp(db: DB, options: AppOptions = {}): Application {
