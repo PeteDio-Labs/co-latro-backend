@@ -95,6 +95,20 @@ describe("auth", () => {
     expect(rows.length).toBe(0);
   });
 
+  // PET-203 (F11): control characters (NUL / CR / LF / etc.) are rejected — they enable log
+  // injection and display spoofing once the name is echoed to logs / the admin `used_by` field.
+  it("rejects names containing control characters with 400 invalid_name", async () => {
+    for (const name of ["bad\x00name", "line\ninject", "carriage\rret", "tab\tsep", "del\x7f"]) {
+      const r = await fetch(`${base}/api/auth/login`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      expect(r.status).toBe(400);
+      expect(((await r.json()) as { error: string }).error).toBe("invalid_name");
+    }
+  });
+
   it("accepts a name of exactly 40 chars (boundary)", async () => {
     const name = "y".repeat(40);
     const r = await fetch(`${base}/api/auth/login`, {
@@ -495,5 +509,19 @@ describe("invite gate (PET-201)", () => {
     adminReply = () => { throw new Error("existing user must not hit the admin gate"); };
     const again = await login({ name: "Returning" }); // existing → resolves, no code, no admin call
     expect(again.status).toBe(201);
+  });
+
+  // PET-203 (F5): a rejected invite must not leave an orphaned account behind. The row is created
+  // before the (failure-prone) remote claim, so the rejection path must roll it back — otherwise the
+  // name is squatted and a later valid attempt would wrongly resolve as an existing, un-gated user.
+  it("rolls back the new account when the admin rejects the code (no squatted name)", async () => {
+    adminReply = () => Response.json({ ok: false, error: "unknown code" }, { status: 404 });
+    expect((await login({ name: "Rollback", inviteCode: "bad" })).status).toBe(403);
+    const rows = await db.select().from(users).where(eq(users.name, "Rollback"));
+    expect(rows.length).toBe(0); // rolled back — nothing persisted
+    // and the name is still free: a valid code now creates the account fresh (gate runs, 201)
+    adminReply = (code) =>
+      code === "good" ? Response.json({ ok: true }) : Response.json({ ok: false, error: "unknown code" }, { status: 404 });
+    expect((await login({ name: "Rollback", inviteCode: "good" })).status).toBe(201);
   });
 });
