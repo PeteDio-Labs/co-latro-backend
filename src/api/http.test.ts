@@ -26,24 +26,32 @@ function authed(token: string): Record<string, string> {
   return { authorization: `Bearer ${token}`, "content-type": "application/json" };
 }
 
-async function login(name: string): Promise<string> {
-  const r = await fetch(`${base}/api/auth/login`, {
+// PET-206: a shared password for test accounts. The default suite app leaves the invite gate
+// OFF, so signup needs only a username + password.
+const TEST_PW = "test-password-123";
+
+/** Create a fresh credentialed account and return its token (most tests just need an authed user). */
+async function signUp(name: string): Promise<string> {
+  const r = await fetch(`${base}/api/auth/signup`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ username: name, password: TEST_PW }),
   });
   expect(r.status).toBe(201);
   const body = (await r.json()) as { token: string };
   return body.token;
 }
 
-describe("auth", () => {
-  it("login returns token + user", async () => {
-    const r = await fetch(`${base}/api/auth/login`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: "Alice" }),
-    });
+const post = (path: string, body: unknown) =>
+  fetch(`${base}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+describe("auth (PET-206: signup + password login)", () => {
+  it("signup returns token + user", async () => {
+    const r = await post("/api/auth/signup", { username: "Alice", password: TEST_PW });
     expect(r.status).toBe(201);
     const body = (await r.json()) as { token: string; user: { name: string } };
     expect(body.token).toBeTruthy();
@@ -51,7 +59,7 @@ describe("auth", () => {
   });
 
   it("me works with a token; 401 without or with a bad one", async () => {
-    const token = await login("Bob");
+    const token = await signUp("Bob");
     const ok = await fetch(`${base}/api/auth/me`, { headers: authed(token) });
     expect(ok.status).toBe(200);
     expect(((await ok.json()) as { user: { name: string } }).user.name).toBe("Bob");
@@ -60,69 +68,85 @@ describe("auth", () => {
     expect((await fetch(`${base}/api/auth/me`, { headers: { authorization: "Bearer nope" } })).status).toBe(401);
   });
 
-  it("login is find-or-create (same name → same user); re-login rotates the token", async () => {
-    const t1 = await login("Carol");
+  it("login with the right password works (same user); a fresh login rotates the token", async () => {
+    const t1 = await signUp("Carol");
     const u1 = (await (await fetch(`${base}/api/auth/me`, { headers: authed(t1) })).json()) as { user: { id: string } };
-    const t2 = await login("Carol"); // re-login rotates the token, invalidating t1
+    const r = await post("/api/auth/login", { username: "Carol", password: TEST_PW });
+    expect(r.status).toBe(200);
+    const t2 = ((await r.json()) as { token: string }).token;
     const u2 = (await (await fetch(`${base}/api/auth/me`, { headers: authed(t2) })).json()) as { user: { id: string } };
-    expect(u2.user.id).toBe(u1.user.id); // same user
+    expect(u2.user.id).toBe(u1.user.id); // same account
     expect((await fetch(`${base}/api/auth/me`, { headers: authed(t1) })).status).toBe(401); // old token dead
   });
 
-  // PET-60: name validation — empty/whitespace and >40 chars are rejected (not silently truncated).
-  it("rejects empty / whitespace-only / missing names with 400 invalid_name", async () => {
-    for (const body of [{ name: "" }, { name: "   " }, { name: 123 }, {}]) {
-      const r = await fetch(`${base}/api/auth/login`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
+  it("login with the wrong password is 401 (and a non-existent user is the same 401)", async () => {
+    await signUp("Dana");
+    expect((await post("/api/auth/login", { username: "Dana", password: "wrong-password" })).status).toBe(401);
+    // unknown user → same generic 401 (no username enumeration)
+    const miss = await post("/api/auth/login", { username: "nobody-here", password: TEST_PW });
+    expect(miss.status).toBe(401);
+    expect(((await miss.json()) as { error: string }).error).toBe("invalid_credentials");
+  });
+
+  it("you cannot log in as an existing user without the password (closes F3)", async () => {
+    await signUp("Pedro");
+    // knowing only the username is no longer enough — must supply the password
+    expect((await post("/api/auth/login", { username: "Pedro", password: "guess" })).status).toBe(401);
+    expect((await post("/api/auth/login", { username: "Pedro" })).status).toBe(400); // no password
+  });
+
+  it("signup rejects a duplicate username with 409", async () => {
+    await signUp("Sam");
+    const r = await post("/api/auth/signup", { username: "Sam", password: "another-password" });
+    expect(r.status).toBe(409);
+    expect(((await r.json()) as { error: string }).error).toBe("username_taken");
+  });
+
+  // PET-60/206: username validation — empty/whitespace, >40 chars, and control chars are rejected.
+  it("signup rejects empty / whitespace / missing / non-string usernames with 400", async () => {
+    for (const body of [{ password: TEST_PW }, { username: "", password: TEST_PW }, { username: "   ", password: TEST_PW }, { username: 123, password: TEST_PW }]) {
+      const r = await post("/api/auth/signup", body);
       expect(r.status).toBe(400);
-      expect(((await r.json()) as { error: string }).error).toBe("invalid_name");
+      expect(((await r.json()) as { error: string }).error).toBe("invalid_username");
     }
   });
 
-  it("rejects names longer than 40 chars with 400 (no silent truncation)", async () => {
-    const r = await fetch(`${base}/api/auth/login`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: "x".repeat(41) }),
-    });
-    expect(r.status).toBe(400);
-    expect(((await r.json()) as { error: string }).error).toBe("invalid_name");
-    // and the over-long name was NOT created
-    const rows = await db.select().from(users).where(eq(users.name, "x".repeat(40)));
+  it("signup rejects usernames >40 chars and control chars (400, nothing created)", async () => {
+    expect((await post("/api/auth/signup", { username: "x".repeat(41), password: TEST_PW })).status).toBe(400);
+    for (const username of ["bad\x00name", "line\ninject", "tab\tsep", "del\x7f"]) {
+      expect((await post("/api/auth/signup", { username, password: TEST_PW })).status).toBe(400);
+    }
+    const rows = await db.select().from(users).where(eq(users.name, "x".repeat(41)));
     expect(rows.length).toBe(0);
   });
 
-  // PET-203 (F11): control characters (NUL / CR / LF / etc.) are rejected — they enable log
-  // injection and display spoofing once the name is echoed to logs / the admin `used_by` field.
-  it("rejects names containing control characters with 400 invalid_name", async () => {
-    for (const name of ["bad\x00name", "line\ninject", "carriage\rret", "tab\tsep", "del\x7f"]) {
-      const r = await fetch(`${base}/api/auth/login`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name }),
-      });
-      expect(r.status).toBe(400);
-      expect(((await r.json()) as { error: string }).error).toBe("invalid_name");
-    }
-  });
-
-  it("accepts a name of exactly 40 chars (boundary)", async () => {
+  it("signup accepts a 40-char username (boundary)", async () => {
     const name = "y".repeat(40);
-    const r = await fetch(`${base}/api/auth/login`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name }),
-    });
+    const r = await post("/api/auth/signup", { username: name, password: TEST_PW });
     expect(r.status).toBe(201);
     expect(((await r.json()) as { user: { name: string } }).user.name).toBe(name);
   });
 
+  // PET-206: password must be >= 8 chars (and not absurdly long).
+  it("signup rejects short / missing / over-long passwords with 400 invalid_password", async () => {
+    for (const body of [{ username: "PwA" }, { username: "PwB", password: "short" }, { username: "PwC", password: "x".repeat(201) }]) {
+      const r = await post("/api/auth/signup", body);
+      expect(r.status).toBe(400);
+      expect(((await r.json()) as { error: string }).error).toBe("invalid_password");
+    }
+    expect((await db.select().from(users).where(eq(users.name, "PwA"))).length).toBe(0);
+  });
+
+  it("the stored password is hashed, never the plaintext", async () => {
+    await signUp("Hashy");
+    const [row] = await db.select({ h: users.passwordHash }).from(users).where(eq(users.name, "Hashy")).limit(1);
+    expect(row!.h).not.toBe(TEST_PW);
+    expect(row!.h).toMatch(/^\$argon2id\$/); // argon2id PHC string
+  });
+
   // PET-60: logout invalidates the current token server-side.
-  it("logout invalidates the token (204; old token then 401), and a fresh login works", async () => {
-    const t = await login("Quinn");
+  it("logout invalidates the token (204; old token then 401), and re-login works", async () => {
+    const t = await signUp("Quinn");
     expect((await fetch(`${base}/api/auth/me`, { headers: authed(t) })).status).toBe(200);
 
     const out = await fetch(`${base}/api/auth/logout`, { method: "POST", headers: authed(t) });
@@ -131,13 +155,14 @@ describe("auth", () => {
     expect((await fetch(`${base}/api/auth/me`, { headers: authed(t) })).status).toBe(401); // token dead
     expect((await fetch(`${base}/api/auth/logout`, { method: "POST", headers: authed(t) })).status).toBe(401);
 
-    const t2 = await login("Quinn"); // can sign back in
+    const r = await post("/api/auth/login", { username: "Quinn", password: TEST_PW }); // can sign back in
+    const t2 = ((await r.json()) as { token: string }).token;
     expect((await fetch(`${base}/api/auth/me`, { headers: authed(t2) })).status).toBe(200);
   });
 
   // PET-60: an expired token is rejected like an invalid one.
   it("rejects an expired token with 401 token_expired", async () => {
-    const t = await login("Rex");
+    const t = await signUp("Rex");
     expect((await fetch(`${base}/api/auth/me`, { headers: authed(t) })).status).toBe(200);
 
     // Force the token into the past directly in the DB.
@@ -153,8 +178,8 @@ describe("auth", () => {
     expect((await fetch(`${base}/api/run/active`, { headers: authed(t) })).status).toBe(401);
   });
 
-  it("login sets a future token expiry (~30 days out)", async () => {
-    await login("Sky");
+  it("signup sets a future token expiry (~30 days out)", async () => {
+    await signUp("Sky");
     const [row] = await db
       .select({ exp: users.tokenExpiresAt })
       .from(users)
@@ -173,14 +198,14 @@ describe("run", () => {
   });
 
   it("fresh user has no active run", async () => {
-    const token = await login("Dave");
+    const token = await signUp("Dave");
     const r = await fetch(`${base}/api/run/active`, { headers: authed(token) });
     expect(r.status).toBe(200);
     expect(((await r.json()) as { run: unknown }).run).toBeNull();
   });
 
   it("start → blind → playing, and never leaks the deck", async () => {
-    const token = await login("Erin");
+    const token = await signUp("Erin");
     const start = await fetch(`${base}/api/run`, {
       method: "POST",
       headers: authed(token),
@@ -205,7 +230,7 @@ describe("run", () => {
   });
 
   it("404 when playing with no active run", async () => {
-    const token = await login("Frank");
+    const token = await signUp("Frank");
     const r = await fetch(`${base}/api/run/play`, {
       method: "POST",
       headers: authed(token),
@@ -215,8 +240,8 @@ describe("run", () => {
   });
 
   it("runs are isolated per user", async () => {
-    const a = await login("Gina");
-    const b = await login("Hank");
+    const a = await signUp("Gina");
+    const b = await signUp("Hank");
     await fetch(`${base}/api/run`, { method: "POST", headers: authed(a), body: JSON.stringify({ difficulty: "easy" }) });
     await fetch(`${base}/api/run`, { method: "POST", headers: authed(b), body: JSON.stringify({ difficulty: "hard" }) });
 
@@ -230,7 +255,7 @@ describe("run", () => {
 
 describe("decks, deck-peek, shop", () => {
   it("GET /api/decks returns the preset catalog", async () => {
-    const token = await login("Ivy");
+    const token = await signUp("Ivy");
     const r = await fetch(`${base}/api/decks`, { headers: authed(token) });
     expect(r.status).toBe(200);
     const body = (await r.json()) as { decks: { id: string; size: number }[] };
@@ -242,7 +267,7 @@ describe("decks, deck-peek, shop", () => {
   });
 
   it("starting with a deckId uses that composition (abandoned → 40)", async () => {
-    const token = await login("Jade");
+    const token = await signUp("Jade");
     await fetch(`${base}/api/run`, {
       method: "POST",
       headers: authed(token),
@@ -255,7 +280,7 @@ describe("decks, deck-peek, shop", () => {
   });
 
   it("unknown deckId → 400", async () => {
-    const token = await login("Kai");
+    const token = await signUp("Kai");
     const r = await fetch(`${base}/api/run`, {
       method: "POST",
       headers: authed(token),
@@ -265,7 +290,7 @@ describe("decks, deck-peek, shop", () => {
   });
 
   it("deck-peek returns grouped counts and leaks neither deck nor order", async () => {
-    const token = await login("Lex");
+    const token = await signUp("Lex");
     await fetch(`${base}/api/run`, {
       method: "POST",
       headers: authed(token),
@@ -291,7 +316,7 @@ describe("decks, deck-peek, shop", () => {
   });
 
   it("buy with no active run → 404; buy when not shopping → 409", async () => {
-    const token = await login("Mara");
+    const token = await signUp("Mara");
     const noRun = await fetch(`${base}/api/run/buy`, {
       method: "POST",
       headers: authed(token),
@@ -315,7 +340,7 @@ describe("decks, deck-peek, shop", () => {
 
 describe("new run overwrites the active save", () => {
   it("starting a new run replaces the active one (new runId, fresh state)", async () => {
-    const token = await login("Nova");
+    const token = await signUp("Nova");
     const r1 = (await (
       await fetch(`${base}/api/run`, {
         method: "POST",
@@ -344,7 +369,7 @@ describe("new run overwrites the active save", () => {
   });
 
   it("an invalid deckId does not destroy the active run", async () => {
-    const token = await login("Oz");
+    const token = await signUp("Oz");
     const r1 = (await (
       await fetch(`${base}/api/run`, {
         method: "POST",
@@ -369,7 +394,7 @@ describe("new run overwrites the active save", () => {
 
 describe("jokers (API shape + guards)", () => {
   it("DTO exposes jokers + maxJokers; sell/reorder of an unowned joker → 404; no deck leak", async () => {
-    const token = await login("Pia");
+    const token = await signUp("Pia");
     await fetch(`${base}/api/run`, {
       method: "POST",
       headers: authed(token),
@@ -414,12 +439,12 @@ describe("login rate limiting", () => {
 
   afterAll(() => rlServer.close());
 
-  it("429s once an IP exceeds the per-minute login cap", async () => {
+  it("429s once an IP exceeds the per-minute cap", async () => {
     const attempt = (name: string) =>
-      fetch(`${rlBase}/api/auth/login`, {
+      fetch(`${rlBase}/api/auth/signup`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ username: name, password: TEST_PW }),
       });
 
     // First 3 succeed (cap = 3), the 4th is rejected.
@@ -467,62 +492,67 @@ describe("invite gate (PET-201)", () => {
     gServer.close();
   });
 
-  const login = (body: Record<string, unknown>) =>
-    realFetch(`${gBase}/api/auth/login`, {
+  // Signup with a username + password (+ optional invite code) against the gated server.
+  const doSignup = (body: Record<string, unknown>) =>
+    realFetch(`${gBase}/api/auth/signup`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ password: TEST_PW, ...body }),
     });
 
-  it("rejects a new account with no invite code (403 invite_required, no admin call)", async () => {
+  it("rejects signup with no invite code (403 invite_required, no admin call)", async () => {
     adminReply = () => { throw new Error("admin must not be called when no code is given"); };
-    const r = await login({ name: "Gatecrasher" });
+    const r = await doSignup({ username: "Gatecrasher" });
     expect(r.status).toBe(403);
     expect(((await r.json()) as { error: string }).error).toBe("invite_required");
   });
 
-  it("creates a new account when the admin claims the code (201)", async () => {
+  it("creates the account when the admin claims the code (201)", async () => {
     adminReply = (code) =>
       code === "good" ? Response.json({ ok: true }) : Response.json({ ok: false, error: "unknown code" }, { status: 404 });
-    const r = await login({ name: "Invitee", inviteCode: "good" });
+    const r = await doSignup({ username: "Invitee", inviteCode: "good" });
     expect(r.status).toBe(201);
     expect(((await r.json()) as { user: { name: string } }).user.name).toBe("Invitee");
   });
 
   it("maps an already-used code to 403 (admin 409)", async () => {
     adminReply = () => Response.json({ ok: false, error: "already used" }, { status: 409 });
-    const r = await login({ name: "LateComer", inviteCode: "burned" });
+    const r = await doSignup({ username: "LateComer", inviteCode: "burned" });
     expect(r.status).toBe(403);
     expect(((await r.json()) as { message: string }).message).toMatch(/already been used/i);
   });
 
   it("fails closed when the admin service is unreachable (403)", async () => {
     adminReply = () => { throw new Error("network down"); };
-    const r = await login({ name: "Unlucky", inviteCode: "whatever" });
+    const r = await doSignup({ username: "Unlucky", inviteCode: "whatever" });
     expect(r.status).toBe(403);
   });
 
-  it("never gates an EXISTING user (re-login makes no admin call)", async () => {
+  it("LOGIN never hits the invite gate (only signup does)", async () => {
     adminReply = (code) =>
       code === "good" ? Response.json({ ok: true }) : Response.json({ ok: false, error: "unknown code" }, { status: 404 });
-    expect((await login({ name: "Returning", inviteCode: "good" })).status).toBe(201); // created
-    adminReply = () => { throw new Error("existing user must not hit the admin gate"); };
-    const again = await login({ name: "Returning" }); // existing → resolves, no code, no admin call
-    expect(again.status).toBe(201);
+    expect((await doSignup({ username: "Returning", inviteCode: "good" })).status).toBe(201); // created
+    adminReply = () => { throw new Error("login must not call the admin invite gate"); };
+    const again = await realFetch(`${gBase}/api/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "Returning", password: TEST_PW }),
+    });
+    expect(again.status).toBe(200); // logs in with the password, no admin call
   });
 
   // PET-203 (F5): a rejected invite must not leave an orphaned account behind. The row is created
   // before the (failure-prone) remote claim, so the rejection path must roll it back — otherwise the
-  // name is squatted and a later valid attempt would wrongly resolve as an existing, un-gated user.
-  it("rolls back the new account when the admin rejects the code (no squatted name)", async () => {
+  // username is squatted and the tester could never re-use it.
+  it("rolls back the new account when the admin rejects the code (no squatted username)", async () => {
     adminReply = () => Response.json({ ok: false, error: "unknown code" }, { status: 404 });
-    expect((await login({ name: "Rollback", inviteCode: "bad" })).status).toBe(403);
+    expect((await doSignup({ username: "Rollback", inviteCode: "bad" })).status).toBe(403);
     const rows = await db.select().from(users).where(eq(users.name, "Rollback"));
     expect(rows.length).toBe(0); // rolled back — nothing persisted
-    // and the name is still free: a valid code now creates the account fresh (gate runs, 201)
+    // and the username is still free: a valid code now creates the account fresh (gate runs, 201)
     adminReply = (code) =>
       code === "good" ? Response.json({ ok: true }) : Response.json({ ok: false, error: "unknown code" }, { status: 404 });
-    expect((await login({ name: "Rollback", inviteCode: "good" })).status).toBe(201);
+    expect((await doSignup({ username: "Rollback", inviteCode: "good" })).status).toBe(201);
   });
 });
 
@@ -561,10 +591,10 @@ describe("invite token (PET-204/F2)", () => {
   });
 
   it("sends the scoped Bearer token (not basic-auth) to the invites function", async () => {
-    const r = await realFetch(`${tBase}/api/auth/login`, {
+    const r = await realFetch(`${tBase}/api/auth/signup`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: "TokenUser", inviteCode: "anything" }),
+      body: JSON.stringify({ username: "TokenUser", password: TEST_PW, inviteCode: "anything" }),
     });
     expect(r.status).toBe(201);
     expect(seenAuth).toBe(`Bearer ${TOKEN}`);

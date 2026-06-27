@@ -1,4 +1,6 @@
-/** Auth routes: sign in by name (find-or-create, issue token) + resolve current user. */
+/** Auth routes (PET-206): invite-gated signup (username + password) + password login.
+ *  Replaces the old name-only find-or-create — accounts now carry an argon2id password, so
+ *  knowing a username is no longer enough to play as that user (closes PET-203/F3). */
 
 import { eq } from "drizzle-orm";
 import { Router } from "express";
@@ -8,8 +10,11 @@ import { config } from "../config.ts";
 import { TOKEN_TTL_SECONDS, createBearerAuth, sha256hex } from "../middleware/auth.ts";
 import { loginRateLimit } from "../middleware/rateLimit.ts";
 
-/** PET-60: display names are bounded — empty/whitespace and >40 chars are rejected (not silently truncated). */
+/** PET-60/206: usernames are bounded — empty/whitespace and >40 chars are rejected. */
 const MAX_NAME_LENGTH = 40;
+/** PET-206: password bounds. Min for strength; max so a giant input can't tie up argon2 (DoS). */
+const MIN_PASSWORD_LENGTH = 8;
+const MAX_PASSWORD_LENGTH = 200;
 
 function generateToken(): string {
   const bytes = new Uint8Array(32);
@@ -21,12 +26,61 @@ function nowSec(): number {
   return Math.floor(Date.now() / 1000);
 }
 
+/** PET-206: argon2id at rest (Bun's built-in). The raw password is never stored or logged. */
+function hashPassword(password: string): Promise<string> {
+  return Bun.password.hash(password, { algorithm: "argon2id" });
+}
+
+async function verifyPassword(password: string, hash: string): Promise<boolean> {
+  try {
+    return await Bun.password.verify(password, hash);
+  } catch {
+    return false; // malformed hash → treat as mismatch
+  }
+}
+
+// PET-206: a real argon2id hash to verify against when the username doesn't exist, so a login
+// miss costs the same as a wrong password — no timing oracle that reveals which usernames exist.
+// Computed once, lazily (top-level await would block module import for every consumer).
+let dummyHashPromise: Promise<string> | null = null;
+function dummyHash(): Promise<string> {
+  return (dummyHashPromise ??= hashPassword("timing-equalizer-not-a-real-secret"));
+}
+
+/** Validate a submitted username → trimmed value, or a 400-shaped error. */
+function checkUsername(raw: unknown): { name: string } | { error: string; message: string } {
+  if (typeof raw !== "string" || !raw.trim()) {
+    return { error: "invalid_username", message: "Enter a username" };
+  }
+  const name = raw.trim();
+  if (name.length > MAX_NAME_LENGTH) {
+    return { error: "invalid_username", message: `Username must be ${MAX_NAME_LENGTH} characters or fewer` };
+  }
+  // PET-203/F11: reject control characters (log injection / display spoofing once echoed).
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1F\x7F]/.test(name)) {
+    return { error: "invalid_username", message: "Username contains invalid characters" };
+  }
+  return { name };
+}
+
+/** Validate a submitted password (not trimmed — leading/trailing spaces are significant). */
+function checkPassword(raw: unknown): { password: string } | { error: string; message: string } {
+  if (typeof raw !== "string" || raw.length < MIN_PASSWORD_LENGTH) {
+    return { error: "invalid_password", message: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` };
+  }
+  if (raw.length > MAX_PASSWORD_LENGTH) {
+    return { error: "invalid_password", message: `Password must be ${MAX_PASSWORD_LENGTH} characters or fewer` };
+  }
+  return { password: raw };
+}
+
 /**
  * PET-201: validate + atomically consume an invite via the co-latro-admin `invites` function
  * (POST {base}/validate {code, user}). Returns ok:true only when the admin claimed the code.
- * Maps the admin's already-used (409) / expired (410) / unknown (404) into player-facing
- * messages, and FAILS CLOSED on any transport error — a configured gate must not let people in
- * when the validator is unreachable. `auth` is the faasd gateway basic-auth ("user:pass"), optional.
+ * Maps already-used (409) / expired (410) / unknown (404) into player-facing messages, and FAILS
+ * CLOSED on any transport error. PET-204 (F2): authenticates with the scoped Bearer `token`
+ * (preferred) or the legacy gateway basic-auth (`auth`, back-compat fallback).
  */
 async function validateInvite(
   baseUrl: string,
@@ -37,8 +91,6 @@ async function validateInvite(
 ): Promise<{ ok: boolean; message: string }> {
   try {
     const headers: Record<string, string> = { "content-type": "application/json" };
-    // PET-204 (F2): prefer the scoped invites Bearer token (the function's own authz). Fall back
-    // to the legacy gateway basic-auth only when no token is configured (interim / back-compat).
     if (token) headers.authorization = "Bearer " + token;
     else if (auth) headers.authorization = "Basic " + Buffer.from(auth).toString("base64");
     const r = await fetch(`${baseUrl}/validate`, {
@@ -62,7 +114,7 @@ async function validateInvite(
 
 /** Auth-router knobs (forwarded from createApp; mainly for tests). */
 export interface AuthRouterOptions {
-  /** Override the per-IP login rate-limit max (defaults to config.loginRateLimitMax). */
+  /** Override the per-IP login/signup rate-limit max (defaults to config.loginRateLimitMax). */
   loginRateLimitMax?: number;
   /** PET-201: override the admin invites service (defaults to config.adminInvitesUrl / Auth). */
   adminInvitesUrl?: string;
@@ -75,20 +127,16 @@ export function createAuthRouter(db: DB, options: AuthRouterOptions = {}): Route
   const router = Router();
   const bearerAuth = createBearerAuth(db);
 
-  // PET-201: invite gate, resolved once at router construction. Options override config (tests).
-  // Invites are issued + validated by the co-latro-admin `invites` function; the gate is OFF
-  // when adminInvitesUrl is empty (dev, and the interim before that fn is deployed — PET-99) —
-  // the site stays edge-gated by Cloudflare Access regardless.
+  // PET-201: invite gate, resolved once at construction. The gate is OFF when adminInvitesUrl is
+  // empty (dev / the interim before the admin fn is deployed) — the site stays edge-gated by CF.
   const adminInvitesUrl = options.adminInvitesUrl ?? config.adminInvitesUrl;
   const adminInvitesAuth = options.adminInvitesAuth ?? config.adminInvitesAuth;
   const adminInvitesToken = options.adminInvitesToken ?? config.adminInvitesToken;
   const inviteGateOn = adminInvitesUrl !== "";
 
-  // PET-203 (F8): fail CLOSED on a config footgun. An unset COLATRO_ADMIN_INVITES_URL silently
-  // disables the gate (open public signup) with only Cloudflare Access left — and the origin is
-  // LAN-reachable past the edge. In production we refuse to boot rather than come up wide open;
-  // an operator who genuinely wants open signup (the PET-99 interim) must opt in explicitly.
-  // `options.adminInvitesUrl !== undefined` exempts tests, which construct the app directly.
+  // PET-203 (F8): fail CLOSED on the config footgun — refuse to boot in production with the invite
+  // gate unconfigured (would be open public signup). An operator who genuinely wants open signup
+  // sets COLATRO_ALLOW_OPEN_SIGNUP=1. `options.adminInvitesUrl !== undefined` exempts tests.
   if (
     config.env === "production" &&
     !inviteGateOn &&
@@ -101,76 +149,95 @@ export function createAuthRouter(db: DB, options: AuthRouterOptions = {}): Route
     );
   }
 
-  // Sign in by name: find-or-create the user, mint a fresh token (returned exactly once).
-  // Per-IP rate-limited (PET-60) to blunt brute-force / enumeration before it reaches the DB.
-  router.post("/login", loginRateLimit(options.loginRateLimitMax), async (req, res) => {
-    const rawName = req.body?.name;
-    if (typeof rawName !== "string" || !rawName.trim()) {
-      res.status(400).json({ error: "invalid_name", message: "Enter a name" });
-      return;
-    }
-    const name = rawName.trim();
-    // PET-60: reject over-long names with a clear error instead of truncating them.
-    if (name.length > MAX_NAME_LENGTH) {
-      res.status(400).json({
-        error: "invalid_name",
-        message: `Name must be ${MAX_NAME_LENGTH} characters or fewer`,
-      });
-      return;
-    }
-    // PET-203 (F11): reject control characters (incl. NUL / CR / LF). Names are stored, echoed to
-    // other surfaces (admin `used_by`, structured logs), and rendered — control chars enable log
-    // injection / display spoofing. Printable text (letters, digits, spaces, punctuation, emoji,
-    // CJK) is allowed; the frontend escapes on render as defense-in-depth.
-    // eslint-disable-next-line no-control-regex
-    if (/[\x00-\x1F\x7F]/.test(name)) {
-      res.status(400).json({ error: "invalid_name", message: "Name contains invalid characters" });
-      return;
-    }
+  /** Mint a fresh token: raw token (returned once) + its stored hash + expiry. */
+  function mintToken(): { token: string; tokenHash: string; tokenExpiresAt: number } {
     const token = generateToken();
-    const tokenHash = sha256hex(token);
-    const tokenExpiresAt = nowSec() + TOKEN_TTL_SECONDS;
+    return { token, tokenHash: sha256hex(token), tokenExpiresAt: nowSec() + TOKEN_TTL_SECONDS };
+  }
 
-    const [existing] = await db.select().from(users).where(eq(users.name, name)).limit(1);
-    let user: { id: string; name: string };
-    if (existing) {
-      await db
-        .update(users)
-        .set({ tokenHash, tokenExpiresAt, lastSeenAt: nowSec() })
-        .where(eq(users.id, existing.id));
-      user = { id: existing.id, name: existing.name };
-    } else {
-      // PET-201: a NEW account needs a valid invite when the gate is on (existing users above
-      // are never gated). Rate-limited upstream (PET-60); the edge gate is Cloudflare Access
-      // (PET-58) — this is the app-level half.
-      const code =
-        inviteGateOn && typeof req.body?.inviteCode === "string" ? req.body.inviteCode.trim() : "";
-      if (inviteGateOn && !code) {
+  // PET-206: create a credentialed account. Needs a valid invite when the gate is on. Per-IP
+  // rate-limited (PET-60) to blunt enumeration. Edge gate is Cloudflare Access (PET-58).
+  router.post("/signup", loginRateLimit(options.loginRateLimitMax), async (req, res) => {
+    const u = checkUsername(req.body?.username);
+    if ("error" in u) {
+      res.status(400).json(u);
+      return;
+    }
+    const p = checkPassword(req.body?.password);
+    if ("error" in p) {
+      res.status(400).json(p);
+      return;
+    }
+    const { name } = u;
+
+    let code = "";
+    if (inviteGateOn) {
+      code = typeof req.body?.inviteCode === "string" ? req.body.inviteCode.trim() : "";
+      if (!code) {
         res.status(403).json({
           error: "invite_required",
           message: "This prealpha is invite-only — enter your invite code.",
         });
         return;
       }
-      // PET-203 (F5): create the row FIRST, then consume the invite — the local insert is reliable
-      // while the remote claim is the failure-prone step. The previous order (consume → insert)
-      // burned the single-use code with no rollback if the insert failed (the admin only un-claims
-      // on expiry), self-DoSing the invite. Now: if the claim is rejected we delete the just-created
-      // row, so a bad/used code leaves nothing behind, and a successful claim is the LAST thing that
-      // can fail — nothing after it can orphan a consumed code.
-      const id = crypto.randomUUID();
-      await db.insert(users).values({ id, name, tokenHash, tokenExpiresAt });
-      if (inviteGateOn) {
-        const verdict = await validateInvite(adminInvitesUrl, adminInvitesAuth, adminInvitesToken, code, name);
-        if (!verdict.ok) {
-          await db.delete(users).where(eq(users.id, id)); // roll back the un-invited account
-          res.status(403).json({ error: "invite_required", message: verdict.message });
-          return;
-        }
-      }
-      user = { id, name };
     }
-    res.status(201).json({ token, user });
+
+    // Reject a taken username up front with a clear 409 (the unique index is the real guard).
+    const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.name, name)).limit(1);
+    if (existing) {
+      res.status(409).json({ error: "username_taken", message: "That username is taken — choose another." });
+      return;
+    }
+
+    const passwordHash = await hashPassword(p.password);
+    const { token, tokenHash, tokenExpiresAt } = mintToken();
+    const id = crypto.randomUUID();
+
+    // PET-203 (F5): create the row first (settles the unique name), consume the invite LAST, and
+    // roll the row back if the claim is rejected — so a bad/used code never burns with an orphaned
+    // account, and a successful claim is the last thing that can fail.
+    try {
+      await db.insert(users).values({ id, name, passwordHash, tokenHash, tokenExpiresAt });
+    } catch {
+      res.status(409).json({ error: "username_taken", message: "That username is taken — choose another." });
+      return;
+    }
+    if (inviteGateOn) {
+      const verdict = await validateInvite(adminInvitesUrl, adminInvitesAuth, adminInvitesToken, code, name);
+      if (!verdict.ok) {
+        await db.delete(users).where(eq(users.id, id));
+        res.status(403).json({ error: "invite_required", message: verdict.message });
+        return;
+      }
+    }
+    res.status(201).json({ token, user: { id, name } });
+  });
+
+  // PET-206: password login. No find-or-create, no invite — the account must already exist and
+  // the password must match. A miss and a wrong password are indistinguishable (same 401, same
+  // argon2 cost via the dummy hash) so usernames can't be enumerated. Per-IP rate-limited.
+  router.post("/login", loginRateLimit(options.loginRateLimitMax), async (req, res) => {
+    const name = typeof req.body?.username === "string" ? req.body.username.trim() : "";
+    const password = typeof req.body?.password === "string" ? req.body.password : "";
+    if (!name || !password) {
+      res.status(400).json({ error: "invalid_credentials", message: "Enter your username and password" });
+      return;
+    }
+
+    const [row] = await db
+      .select({ id: users.id, name: users.name, passwordHash: users.passwordHash })
+      .from(users)
+      .where(eq(users.name, name))
+      .limit(1);
+    const ok = await verifyPassword(password, row?.passwordHash ?? (await dummyHash()));
+    if (!row || !ok) {
+      res.status(401).json({ error: "invalid_credentials", message: "Incorrect username or password" });
+      return;
+    }
+
+    const { token, tokenHash, tokenExpiresAt } = await mintToken();
+    await db.update(users).set({ tokenHash, tokenExpiresAt, lastSeenAt: nowSec() }).where(eq(users.id, row.id));
+    res.status(200).json({ token, user: { id: row.id, name: row.name } });
   });
 
   // Sign out: invalidate the current token server-side by rotating the hash to an unguessable,
