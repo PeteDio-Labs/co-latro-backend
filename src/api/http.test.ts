@@ -525,3 +525,48 @@ describe("invite gate (PET-201)", () => {
     expect((await login({ name: "Rollback", inviteCode: "good" })).status).toBe(201);
   });
 });
+
+// PET-204 (F2): the backend authenticates to the invites function with a scoped Bearer token
+// (the function is its own authz boundary — faasd doesn't auth /function/* invokes). Configuring
+// adminInvitesToken must send `Authorization: Bearer <token>`, not the gateway basic-auth.
+describe("invite token (PET-204/F2)", () => {
+  let tServer: Server;
+  let tBase: string;
+  const ADMIN = "http://admin-token.invalid/function/invites";
+  const TOKEN = "scoped-invites-secret-xyz";
+  const realFetch = globalThis.fetch;
+  let seenAuth: string | null = null;
+
+  beforeAll(() => {
+    globalThis.fetch = (async (input: Request | string | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.startsWith(ADMIN)) {
+        seenAuth = new Headers(init?.headers).get("authorization");
+        return Response.json({ ok: true });
+      }
+      return realFetch(input as Parameters<typeof fetch>[0], init);
+    }) as typeof fetch;
+    tServer = createApp(db, {
+      loginRateLimitMax: 10_000,
+      adminInvitesUrl: ADMIN,
+      adminInvitesToken: TOKEN,
+    }).listen(0) as unknown as Server;
+    const addr = tServer.address();
+    tBase = `http://localhost:${typeof addr === "object" && addr ? addr.port : 0}`;
+  });
+
+  afterAll(() => {
+    globalThis.fetch = realFetch;
+    tServer.close();
+  });
+
+  it("sends the scoped Bearer token (not basic-auth) to the invites function", async () => {
+    const r = await realFetch(`${tBase}/api/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "TokenUser", inviteCode: "anything" }),
+    });
+    expect(r.status).toBe(201);
+    expect(seenAuth).toBe(`Bearer ${TOKEN}`);
+  });
+});

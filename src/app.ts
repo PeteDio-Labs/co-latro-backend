@@ -22,6 +22,8 @@ export interface AppOptions {
   /** PET-201: override the admin invites service (defaults to config.adminInvitesUrl / Auth). */
   adminInvitesUrl?: string;
   adminInvitesAuth?: string;
+  /** PET-204: override the scoped invites Bearer token (defaults to config.adminInvitesToken). */
+  adminInvitesToken?: string;
 }
 
 export function createApp(db: DB, options: AppOptions = {}): Application {

@@ -31,12 +31,16 @@ function nowSec(): number {
 async function validateInvite(
   baseUrl: string,
   auth: string,
+  token: string,
   code: string,
   user: string,
 ): Promise<{ ok: boolean; message: string }> {
   try {
     const headers: Record<string, string> = { "content-type": "application/json" };
-    if (auth) headers.authorization = "Basic " + Buffer.from(auth).toString("base64");
+    // PET-204 (F2): prefer the scoped invites Bearer token (the function's own authz). Fall back
+    // to the legacy gateway basic-auth only when no token is configured (interim / back-compat).
+    if (token) headers.authorization = "Bearer " + token;
+    else if (auth) headers.authorization = "Basic " + Buffer.from(auth).toString("base64");
     const r = await fetch(`${baseUrl}/validate`, {
       method: "POST",
       headers,
@@ -63,6 +67,8 @@ export interface AuthRouterOptions {
   /** PET-201: override the admin invites service (defaults to config.adminInvitesUrl / Auth). */
   adminInvitesUrl?: string;
   adminInvitesAuth?: string;
+  /** PET-204: override the scoped invites Bearer token (defaults to config.adminInvitesToken). */
+  adminInvitesToken?: string;
 }
 
 export function createAuthRouter(db: DB, options: AuthRouterOptions = {}): Router {
@@ -75,6 +81,7 @@ export function createAuthRouter(db: DB, options: AuthRouterOptions = {}): Route
   // the site stays edge-gated by Cloudflare Access regardless.
   const adminInvitesUrl = options.adminInvitesUrl ?? config.adminInvitesUrl;
   const adminInvitesAuth = options.adminInvitesAuth ?? config.adminInvitesAuth;
+  const adminInvitesToken = options.adminInvitesToken ?? config.adminInvitesToken;
   const inviteGateOn = adminInvitesUrl !== "";
 
   // PET-203 (F8): fail CLOSED on a config footgun. An unset COLATRO_ADMIN_INVITES_URL silently
@@ -154,7 +161,7 @@ export function createAuthRouter(db: DB, options: AuthRouterOptions = {}): Route
       const id = crypto.randomUUID();
       await db.insert(users).values({ id, name, tokenHash, tokenExpiresAt });
       if (inviteGateOn) {
-        const verdict = await validateInvite(adminInvitesUrl, adminInvitesAuth, code, name);
+        const verdict = await validateInvite(adminInvitesUrl, adminInvitesAuth, adminInvitesToken, code, name);
         if (!verdict.ok) {
           await db.delete(users).where(eq(users.id, id)); // roll back the un-invited account
           res.status(403).json({ error: "invite_required", message: verdict.message });

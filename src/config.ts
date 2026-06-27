@@ -34,4 +34,9 @@ export const config = {
   // faasd gateway basic-auth ("user:pass"), optional. Both from the env (Vault via deploy tooling).
   adminInvitesUrl: (process.env.COLATRO_ADMIN_INVITES_URL ?? "").replace(/\/+$/, ""),
   adminInvitesAuth: process.env.COLATRO_ADMIN_INVITES_AUTH ?? "",
+  // PET-204 (F2): scoped Bearer token the invites function checks (faasd doesn't auth /function/*
+  // invokes). Sent as `Authorization: Bearer <token>` to ${adminInvitesUrl}/validate, preferred
+  // over adminInvitesAuth. Holding this instead of the faasd gateway-ADMIN password means a
+  // backend compromise no longer yields faasd control. From the env (Vault kv/poker/db).
+  adminInvitesToken: process.env.COLATRO_INVITES_TOKEN ?? "",
 } as const;
