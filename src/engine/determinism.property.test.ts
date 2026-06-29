@@ -6,12 +6,12 @@
  * PRNG algorithm — engine functions are exercised through their already-injected `rng` seam,
  * so any conforming PRNG satisfies them.
  *
- * The `mulberry32` / `makeRng` below is a REFERENCE the rewrite can productionize as
- * `src/engine/prng.ts`. The co-op model is "parallel hands, shared blind gate": each player
- * draws from `makeRng(runSeed, playerId)`; the shared boss draws from `makeRng(runSeed, "shared")`.
+ * The keyed PRNG under test is the real `src/engine/prng.ts` (PET-208 productionized the former
+ * in-file reference). The co-op model is "parallel hands, shared blind gate": each player draws
+ * from `makeRng(runSeed, playerId)`; the shared boss draws from `makeRng(runSeed, "shared")`.
  *
  * The `it.todo(...)` stubs at the bottom are the rewrite's contract (seed on RunState, replay,
- * persistence round-trip) — the engine agent turns them into real green tests.
+ * persistence round-trip) — the engine agent turns them into real green tests in PET-209/210.
  */
 import { describe, expect, it } from "bun:test";
 import fc from "fast-check";
@@ -19,34 +19,7 @@ import { makeDeck, shuffle } from "../cards.ts";
 import { rollBossEffect } from "./boss.ts";
 import { playHand, startBlind, startRun, type RunState } from "./run.ts";
 import { cards } from "../testkit.ts";
-
-// ---- reference keyed PRNG (the rewrite may productionize / supersede this) ----
-
-/** mulberry32 — a small, fast, well-distributed 32-bit PRNG. Returns values in [0, 1). */
-function mulberry32(a: number): () => number {
-  return () => {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-/** Fold a string key into the run seed (FNV-1a-ish) → a per-context 32-bit seed. */
-function hashKey(seed: number, key: string): number {
-  let h = (2166136261 ^ seed) >>> 0;
-  for (let i = 0; i < key.length; i++) {
-    h ^= key.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-}
-
-/** A fresh, deterministic stream keyed by (seed, key). Same args → same sequence. */
-function makeRng(seed: number, key: string): () => number {
-  return mulberry32(hashKey(seed, key));
-}
+import { makeRng } from "./prng.ts";
 
 /** RNG-driven fields of a run — what determinism must reproduce (excludes ids/timestamps). */
 function rngFacing(run: RunState) {
@@ -103,6 +76,31 @@ describe("keyed PRNG reference — determinism + isolation", () => {
           expect(v).toBeLessThan(1);
         }
       }),
+    );
+  });
+
+  it("serialize → restore resumes the identical sequence (rngState persistence)", () => {
+    fc.assert(
+      fc.property(
+        seed(),
+        fc.integer({ min: 0, max: 32 }), // draws before snapshotting
+        fc.integer({ min: 1, max: 32 }), // draws to compare after restore
+        (s, warm, tail) => {
+          // Run a stream, snapshot its state mid-sequence, then keep drawing.
+          const live = makeRng(s, "p1");
+          for (let i = 0; i < warm; i++) live();
+          const snapshot = live.getState();
+          const continuation = Array.from({ length: tail }, () => live());
+
+          // A fresh stream restored from the snapshot must resume the identical tail.
+          // (Different seed/key on purpose — setState fully determines the sequence.)
+          const restored = makeRng(s + 1, "p2");
+          restored.setState(snapshot);
+          const resumed = Array.from({ length: tail }, () => restored());
+
+          expect(resumed).toEqual(continuation);
+        },
+      ),
     );
   });
 });
