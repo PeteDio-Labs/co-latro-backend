@@ -6,6 +6,7 @@
 import type { Suit } from "../cards.ts";
 import type { HandType } from "../scoring.ts";
 import { GameError } from "./errors.ts";
+import { Glob } from "bun";
 
 export type JokerRarity = "common" | "uncommon" | "rare";
 
@@ -56,123 +57,15 @@ export function sellValue(cost: number): number {
 
 // Parity is by numeric rank: even = rank % 2 === 0 (10, Q=12 even; A=14 even — see note).
 // Note: Ace (14) is even by numeric parity; face = ranks 11..13 (J/Q/K), Ace is NOT a face.
-export const JOKERS: JokerDef[] = [
-  { id: "joker", name: "Joker", description: "+4 Mult", cost: 2, rarity: "common", effect: { kind: "flat_mult", mult: 4 } },
-  { id: "greedy_joker", name: "Greedy Joker", description: "+3 Mult per ♦ scored", cost: 5, rarity: "common", effect: { kind: "per_suit_mult", suit: "diamonds", mult: 3 } },
-  { id: "lusty_joker", name: "Lusty Joker", description: "+3 Mult per ♥ scored", cost: 5, rarity: "common", effect: { kind: "per_suit_mult", suit: "hearts", mult: 3 } },
-  { id: "wrathful_joker", name: "Wrathful Joker", description: "+3 Mult per ♠ scored", cost: 5, rarity: "common", effect: { kind: "per_suit_mult", suit: "spades", mult: 3 } },
-  { id: "gluttonous_joker", name: "Gluttonous Joker", description: "+3 Mult per ♣ scored", cost: 5, rarity: "common", effect: { kind: "per_suit_mult", suit: "clubs", mult: 3 } },
-  { id: "jolly_joker", name: "Jolly Joker", description: "+8 Mult if hand has a Pair", cost: 3, rarity: "common", effect: { kind: "contains_mult", feature: "pair", mult: 8 } },
-  { id: "zany_joker", name: "Zany Joker", description: "+12 Mult if hand has Three of a Kind", cost: 4, rarity: "common", effect: { kind: "contains_mult", feature: "three_of_a_kind", mult: 12 } },
-  { id: "mad_joker", name: "Mad Joker", description: "+10 Mult if hand has Two Pair", cost: 4, rarity: "common", effect: { kind: "contains_mult", feature: "two_pair", mult: 10 } },
-  { id: "crazy_joker", name: "Crazy Joker", description: "+12 Mult if hand has a Straight", cost: 4, rarity: "common", effect: { kind: "contains_mult", feature: "straight", mult: 12 } },
-  { id: "droll_joker", name: "Droll Joker", description: "+10 Mult if hand has a Flush", cost: 4, rarity: "common", effect: { kind: "contains_mult", feature: "flush", mult: 10 } },
-  { id: "sly_joker", name: "Sly Joker", description: "+50 Chips if hand has a Pair", cost: 3, rarity: "common", effect: { kind: "contains_chips", feature: "pair", chips: 50 } },
-  { id: "clever_joker", name: "Clever Joker", description: "+80 Chips if hand has Two Pair", cost: 4, rarity: "common", effect: { kind: "contains_chips", feature: "two_pair", chips: 80 } },
-  { id: "crafty_joker", name: "Crafty Joker", description: "+80 Chips if hand has a Flush", cost: 4, rarity: "common", effect: { kind: "contains_chips", feature: "flush", chips: 80 } },
-  { id: "half_joker", name: "Half Joker", description: "+20 Mult if 3 or fewer cards played", cost: 5, rarity: "common", effect: { kind: "hand_size_mult", maxCards: 3, mult: 20 } },
-  { id: "scary_face", name: "Scary Face", description: "+30 Chips per face card scored", cost: 4, rarity: "common", effect: { kind: "per_face_chips", chips: 30 } },
-  { id: "even_steven", name: "Even Steven", description: "+4 Mult per even card scored", cost: 4, rarity: "common", effect: { kind: "per_parity_mult", parity: "even", mult: 4 } },
-  { id: "odd_todd", name: "Odd Todd", description: "+31 Chips per odd card scored", cost: 4, rarity: "common", effect: { kind: "per_parity_chips", parity: "odd", chips: 31 } },
-  { id: "abstract_joker", name: "Abstract Joker", description: "+3 Mult per Joker owned", cost: 4, rarity: "uncommon", effect: { kind: "per_joker_mult", mult: 3 } },
-  { id: "banner", name: "Banner", description: "+30 Chips per remaining discard", cost: 5, rarity: "common", effect: { kind: "per_remaining_discard_chips", chips: 30 } },
-  { id: "the_duo", name: "The Duo", description: "×2 Mult if hand has a Pair", cost: 8, rarity: "rare", effect: { kind: "x_mult_contains", feature: "pair", xMult: 2 } },
-  // ----- PET-74 expansion -----
-  { id: "green_joker", name: "Green Joker", description: "+1 Mult per blind cleared", cost: 4, rarity: "common", effect: { kind: "scaling_per_blind_mult", mult: 1 } },
-  { id: "ride_the_bus", name: "Ride the Bus", description: "+1 Mult per blind cleared", cost: 6, rarity: "common", effect: { kind: "scaling_per_blind_mult", mult: 1 } },
-  { id: "square_joker", name: "Square Joker", description: "+4 Chips per blind cleared", cost: 4, rarity: "common", effect: { kind: "scaling_per_blind_chips", chips: 4 } },
-  { id: "constellation", name: "Constellation", description: "+1 Mult per blind cleared", cost: 6, rarity: "uncommon", effect: { kind: "scaling_per_blind_mult", mult: 1 } },
-  { id: "madness", name: "Madness", description: "+0.5 Mult per blind cleared", cost: 7, rarity: "uncommon", effect: { kind: "scaling_per_blind_mult", mult: 0.5 } },
-  { id: "vagabond", name: "Vagabond", description: "Face cards score twice", cost: 8, rarity: "rare", effect: { kind: "retrigger_face" } },
-  { id: "hanging_chad", name: "Hanging Chad", description: "Face cards score twice", cost: 4, rarity: "common", effect: { kind: "retrigger_face" } },
-  { id: "frugal_joker", name: "Frugal Joker", description: "+50 Chips per discard used this blind", cost: 4, rarity: "common", effect: { kind: "on_discard_chips", chips: 50 } },
-  { id: "castle", name: "Castle", description: "+3 Chips per blind cleared", cost: 6, rarity: "uncommon", effect: { kind: "scaling_per_blind_chips", chips: 3 } },
-  { id: "cloud_9", name: "Cloud 9", description: "Earn $1 at end of each hand played", cost: 4, rarity: "common", effect: { kind: "economy_per_hand_played", dollars: 1 } },
-  { id: "rocket", name: "Rocket", description: "Earn $2 at end of each hand played", cost: 6, rarity: "uncommon", effect: { kind: "economy_per_hand_played", dollars: 2 } },
-  { id: "gift_card", name: "Gift Card", description: "Earn $1 at end of each hand played", cost: 4, rarity: "common", effect: { kind: "economy_per_hand_played", dollars: 1 } },
-  { id: "egg", name: "Egg", description: "Earn $1 at end of each hand played", cost: 4, rarity: "common", effect: { kind: "economy_per_hand_played", dollars: 1 } },
-  { id: "delayed_gratification", name: "Delayed Gratification", description: "Earn $2 at end of each hand played", cost: 4, rarity: "common", effect: { kind: "economy_per_hand_played", dollars: 2 } },
-  { id: "walkie_talkie", name: "Walkie Talkie", description: "+10 Chips and +4 Mult", cost: 4, rarity: "common", effect: { kind: "flat_chips_and_mult", chips: 10, mult: 4 } },
-  { id: "mr_bones", name: "Mr. Bones", description: "+5 Mult", cost: 5, rarity: "uncommon", effect: { kind: "flat_mult", mult: 5 } },
-  { id: "photograph", name: "Photograph", description: "+10 Mult if hand has a Flush", cost: 5, rarity: "common", effect: { kind: "contains_mult", feature: "flush", mult: 10 } },
-  { id: "bull", name: "Bull", description: "+2 Mult per $5 held", cost: 6, rarity: "uncommon", effect: { kind: "per_5_dollars_mult", mult: 2 } },
-  { id: "fortune_teller", name: "Fortune Teller", description: "+1 Mult per blind cleared", cost: 6, rarity: "uncommon", effect: { kind: "scaling_per_blind_mult", mult: 1 } },
-  { id: "stuntman", name: "Stuntman", description: "+250 Chips", cost: 7, rarity: "rare", effect: { kind: "flat_chips", chips: 250 } },
-  { id: "icy_joker", name: "Icy Joker", description: "+4 Mult per ♣ scored", cost: 5, rarity: "common", effect: { kind: "per_suit_mult", suit: "clubs", mult: 4 } },
-  { id: "twisted_joker", name: "Twisted Joker", description: "+5 Mult", cost: 3, rarity: "common", effect: { kind: "flat_mult", mult: 5 } },
-  {
-    id: "devious_joker",
-    name: "Devious Joker",
-    description: "+100 Chips if hand has a Straight",
-    cost: 4,
-    rarity: "common",
-    effect: { kind: "contains_chips", feature: "straight", chips: 100 }
-  },
-  {
-    id: "wily_joker",
-    name: "Wily Joker",
-    description: "+100 Chips if hand has Three of a Kind",
-    cost: 4,
-    rarity: "common",
-    effect: { kind: "contains_chips", feature: "three_of_a_kind", chips: 100 }
-  },
-  {
-    id: "sock_and_buskin",
-    name: "Sock and Buskin",
-    description: "Face cards score twice",
-    cost: 6,
-    rarity: "uncommon",
-    effect: { kind: "retrigger_face" }
-  },
-  {
-    id: "the_trio",
-    name: "The Trio",
-    description: "×3 Mult if hand has Three of a Kind",
-    cost: 8,
-    rarity: "rare",
-    effect: { kind: "x_mult_contains", feature: "three_of_a_kind", xMult: 3 }
-  },
-  {
-    id: "the_order",
-    name: "The Order",
-    description: "×3 Mult if hand has a Straight",
-    cost: 8,
-    rarity: "rare",
-    effect: { kind: "x_mult_contains", feature: "straight", xMult: 3 }
-  },
-  {
-    id: "the_tribe",
-    name: "The Tribe",
-    description: "×2 Mult if hand has a Flush",
-    cost: 8,
-    rarity: "rare",
-    effect: { kind: "x_mult_contains", feature: "flush", xMult: 2 }
-  },
-{
-  id: "bootstraps",
-  name: "Bootstraps",
-  description: "+2 Mult for every $5 you have",
-  cost: 6,
-  rarity: "uncommon",
-  effect: { kind: "per_5_dollars_mult", mult: 2 }
-},
-  {
-    id: "onyx_agate",
-    name: "Onyx Agate",
-    description: "+7 Mult per ♣ scored",
-    cost: 6,
-    rarity: "uncommon",
-    effect: { kind: "per_suit_mult", suit: "clubs", mult: 7 }
-  },
-{
-  id: "arrowhead",
-  name: "Arrowhead",
-  description: "+50 Chips per ♠ scored",
-  cost: 6,
-  rarity: "uncommon",
-  effect: { kind: "per_suit_chips", suit: "spades", chips: 50 }
-},
-];
+// Catalog assembled from ./jokers/*.ts — ONE FILE PER JOKER (PET-216). An additive entry
+// is a NEW file, never an edit to this shared array, so additive PRs cannot merge-conflict.
+// Assembled synchronously at module load, sorted by id for a stable, deterministic order.
+// (Files prefixed "_" are helpers, not entries.)
+const _jokerDir = new URL("./jokers/", import.meta.url).pathname;
+const _jokerFiles = [...new Glob("*.ts").scanSync({ cwd: _jokerDir, absolute: true })]
+  .filter((f) => !(f.split("/").pop() ?? "").startsWith("_"))
+  .sort();
+export const JOKERS: JokerDef[] = _jokerFiles.map((f) => require(f).default as JokerDef);
 
 const BY_ID = new Map(JOKERS.map((j) => [j.id, j]));
 
