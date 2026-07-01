@@ -16,6 +16,7 @@ export type JokerEffect =
   | { kind: "flat_mult"; mult: number }
   | { kind: "flat_chips"; chips: number }
   | { kind: "per_suit_mult"; suit: Suit; mult: number } // × scored cards of suit
+  | { kind: "per_suit_chips"; suit: Suit; chips: number } // × scored cards of suit
   | { kind: "contains_mult"; feature: HandFeature; mult: number }
   | { kind: "contains_chips"; feature: HandFeature; chips: number }
   | { kind: "hand_size_mult"; maxCards: number; mult: number } // if played.length <= maxCards
@@ -163,6 +164,14 @@ export const JOKERS: JokerDef[] = [
     rarity: "uncommon",
     effect: { kind: "per_suit_mult", suit: "clubs", mult: 7 }
   },
+{
+  id: "arrowhead",
+  name: "Arrowhead",
+  description: "+50 Chips per ♠ scored",
+  cost: 6,
+  rarity: "uncommon",
+  effect: { kind: "per_suit_chips", suit: "spades", chips: 50 }
+},
 ];
 
 const BY_ID = new Map(JOKERS.map((j) => [j.id, j]));
