@@ -1,3 +1,4 @@
+import { Glob } from "bun";
 /**
  * Tags catalog — Balatro's skip-blind reward tokens (and other trigger-based one-shots).
  * PURE DATA. PET-78 populates the initial set; some effects (free_pack/free_voucher)
@@ -28,77 +29,12 @@ export interface TagDef {
   effect: TagEffect;
 }
 
-export const TAGS: TagDef[] = [
-  {
-    id: "investment_tag",
-    name: "Investment Tag",
-    description: "After defeating the next Boss Blind, gain $25",
-    trigger: "on_shop_enter",
-    effect: { kind: "money_add", n: 25 },
-  },
-  {
-    id: "voucher_tag",
-    name: "Voucher Tag",
-    description: "Adds a Voucher to the next shop",
-    trigger: "on_shop_enter",
-    effect: { kind: "free_voucher" },
-  },
-  {
-    id: "standard_tag",
-    name: "Standard Tag",
-    description: "Gives a free Mega Standard Pack",
-    trigger: "on_pack_open",
-    effect: { kind: "free_pack", packKind: "standard" },
-  },
-  {
-    id: "charm_tag",
-    name: "Charm Tag",
-    description: "Gives a free Mega Arcana Pack",
-    trigger: "on_pack_open",
-    effect: { kind: "free_pack", packKind: "arcana" },
-  },
-  {
-    id: "meteor_tag",
-    name: "Meteor Tag",
-    description: "Gives a free Mega Celestial Pack",
-    trigger: "on_pack_open",
-    effect: { kind: "free_pack", packKind: "celestial" },
-  },
-  {
-    id: "buffoon_tag",
-    name: "Buffoon Tag",
-    description: "Gives a free Mega Buffoon Pack",
-    trigger: "on_pack_open",
-    effect: { kind: "free_pack", packKind: "buffoon" },
-  },
-  {
-    id: "top_up_tag",
-    name: "Top-up Tag",
-    description: "Create up to 2 Common Jokers (must have room)",
-    trigger: "immediate",
-    effect: { kind: "extra_joker_now", rarity: "common" },
-  },
-  {
-    id: "speed_tag",
-    name: "Speed Tag",
-    description: "Gives $5 per Blind skipped this run",
-    trigger: "on_shop_enter",
-    effect: { kind: "money_add", n: 5 },
-  },
-  {
-    id: "uncommon_tag",
-    name: "Uncommon Tag",
-    description: "Shop has a free Uncommon Joker",
-    trigger: "on_shop_enter",
-    effect: { kind: "extra_joker_now", rarity: "uncommon" },
-  },
-  {
-    id: "rare_tag",
-    name: "Rare Tag",
-    description: "Shop has a free Rare Joker",
-    trigger: "on_shop_enter",
-    effect: { kind: "extra_joker_now", rarity: "rare" },
-  },
-];
+// Catalog assembled from ./tags/*.ts — ONE FILE PER ENTRY (PET-216). Additive entries are
+// new files, never a shared-array edit, so additive PRs cannot merge-conflict. Sorted by id.
+const _tagsDir = new URL("./tags/", import.meta.url).pathname;
+const _tagsFiles = [...new Glob("*.ts").scanSync({ cwd: _tagsDir, absolute: true })]
+  .filter((f) => !(f.split("/").pop() ?? "").startsWith("_"))
+  .sort();
+export const TAGS: TagDef[] = _tagsFiles.map((f) => require(f).default as TagDef);
 
 export const TAG_BY_ID = new Map<string, TagDef>(TAGS.map((t) => [t.id, t]));
