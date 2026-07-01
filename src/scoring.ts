@@ -332,6 +332,9 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
         case "per_suit_mult":
           mult += scoredCards.filter((c) => c.suit === e.suit).length * e.mult;
           break;
+        case "per_suit_chips":
+          chips += scoredCards.filter((c) => c.suit === e.suit).length * e.chips;
+          break;
         case "contains_mult":
           if (features[e.feature]) mult += e.mult;
           break;
