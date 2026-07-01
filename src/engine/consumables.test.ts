@@ -7,6 +7,7 @@ import {
   type RunState,
 } from "./run.ts";
 import { CONSUMABLE_BY_ID } from "./consumables.ts";
+import { getJoker } from "./jokers.ts";
 import { faceCode, standardFaces, type Card } from "../cards.ts";
 import { cards } from "../testkit.ts";
 import { defaultHandLevels } from "../scoring.ts";
@@ -397,8 +398,9 @@ describe("useConsumable — spectrals (jokers + money)", () => {
     useConsumable(run, id, undefined, () => 0);
     expect(run.money).toBe(0);
     expect(run.jokers.length).toBe(1);
-    // The_duo is the only rare in PET-71 catalog.
-    expect(run.jokers[0]).toBe("the_duo");
+    // Grants a random *Rare* joker — assert the rarity, not a specific id (the exact pick
+    // depends on catalog order + rng, and the catalog now has several rares). PET-216.
+    expect(getJoker(run.jokers[0]!).rarity).toBe("rare");
   });
 
   it("Immolate destroys 5 hand cards and gives $20", () => {
