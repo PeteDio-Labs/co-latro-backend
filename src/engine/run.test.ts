@@ -16,6 +16,7 @@ import { cards, withMod, card as cardOne } from "../testkit.ts";
 import { faceCode, standardFaces } from "../cards.ts";
 import { defaultHandLevels } from "../scoring.ts";
 import { effectiveHandSize } from "./effectives.ts";
+import { CONSUMABLE_BY_ID } from "./consumables.ts";
 import { HAND_SIZE } from "../difficulty.ts";
 
 function runWith(over: Partial<RunState> & { hand: RunState["hand"] }): RunState {
@@ -527,8 +528,9 @@ describe("card modifier end-of-blind hooks (PET-75)", () => {
     expect(run.consumables.length).toBe(0);
     discardCards(run, ["KH"], () => 0);
     expect(run.consumables.length).toBe(1);
-    // First tarot in catalog is "the_fool".
-    expect(run.consumables[0]!.defId).toBe("the_fool");
+    // Creates a random *tarot* — assert the kind, not a specific id (the exact pick depends on
+    // catalog order + rng, and consumables are now per-file/id-sorted). PET-216.
+    expect(CONSUMABLE_BY_ID.get(run.consumables[0]!.defId)?.kind).toBe("tarot");
   });
 
   it("purple seal: respects max consumables — no spawn when full", () => {
