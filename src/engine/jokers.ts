@@ -155,6 +155,14 @@ export const JOKERS: JokerDef[] = [
   rarity: "uncommon",
   effect: { kind: "per_5_dollars_mult", mult: 2 }
 },
+  {
+    id: "onyx_agate",
+    name: "Onyx Agate",
+    description: "+7 Mult per ♣ scored",
+    cost: 6,
+    rarity: "uncommon",
+    effect: { kind: "per_suit_mult", suit: "clubs", mult: 7 }
+  },
 ];
 
 const BY_ID = new Map(JOKERS.map((j) => [j.id, j]));
