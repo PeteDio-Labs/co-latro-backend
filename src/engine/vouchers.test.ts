@@ -134,6 +134,7 @@ describe("vouchers — shop slot gating", () => {
       "palette",
       "paint_brush",
       "recyclomancy",
+      "nacho_tong",
     ];
     const shop = generateShop(run, () => 0.5);
     expect(shop.voucher).toBeNull();
