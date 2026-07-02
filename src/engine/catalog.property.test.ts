@@ -49,6 +49,8 @@ const ctxGen = fc.record({
   handsRemaining: fc.nat({ max: 8 }),
   // A random edition overlay across owned + unowned ids (exercises the edition fold too).
   jokerEditions: fc.dictionary(fc.constantFrom(...JOKER_IDS), fc.constantFrom(...EDITIONS)),
+  // Cards still HELD in hand (not played) — drives steel enhancement + held_rank_x_mult (PET-231).
+  handHeld: fc.subarray(DECK, { minLength: 0, maxLength: 5 }),
 });
 
 // ---- 1. never-throws -------------------------------------------------------------------
