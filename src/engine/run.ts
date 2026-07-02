@@ -1001,6 +1001,17 @@ function applyConsumableEffect(
       }
       return;
     }
+    case "edition_selected_random": {
+      // Aura (PET-90): roll ONE edition from the pool, apply it to the selected hand card(s).
+      // Single roll (not per-card) so a future multi-select variant stays visually coherent.
+      if (effect.pool.length === 0) return;
+      const ed = effect.pool[Math.floor(rng() * effect.pool.length)]!;
+      for (const card of selectedCards) {
+        card.edition = ed;
+        recordDeckMod(run, card, { edition: ed });
+      }
+      return;
+    }
     case "seal_selected": {
       for (const card of selectedCards) {
         card.seal = effect.seal;
@@ -1208,20 +1219,11 @@ function applyConsumableEffect(
       run.jokers = [keep, keep];
       return;
     }
-    case "apply_joker_edition_random": {
-      // Aura pattern. Prefer un-editioned jokers; fall back to overwriting if all are editioned.
-      if (run.jokers.length === 0) return; // no jokers → no-op (slot still consumed)
-      const candidates = run.jokers.filter((jid) => !run.jokerEditions[jid]);
-      const pool = candidates.length > 0 ? candidates : run.jokers;
-      const jid = pool[Math.floor(rng() * pool.length)]!;
-      const edPool = effect.pool;
-      if (edPool.length === 0) return;
-      const ed = edPool[Math.floor(rng() * edPool.length)]!;
-      run.jokerEditions[jid] = ed;
-      return;
-    }
     case "apply_joker_edition_negative": {
-      // Ectoplasm pattern. Overwrites any existing edition.
+      // Ectoplasm pattern. Overwrites any existing edition. The permanent hand-size downside
+      // (-1 per use, stacking) applies even when no joker is owned — same convention as
+      // Wraith's money wipe. effectiveHandSize floors at 1, so stacking can't deal 0 cards.
+      if (effect.handSizeDelta) run.handSizeOffset += effect.handSizeDelta;
       if (run.jokers.length === 0) return;
       const jid = run.jokers[Math.floor(rng() * run.jokers.length)]!;
       run.jokerEditions[jid] = "negative";
