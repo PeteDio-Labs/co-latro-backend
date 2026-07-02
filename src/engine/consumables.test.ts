@@ -457,21 +457,62 @@ describe("useConsumable — spectrals (selection-based)", () => {
   });
 });
 
-describe("useConsumable — spectrals (deferred placeholders)", () => {
-  it("Aura is consumed but is a no-op (deferred)", () => {
-    const run = makeRun({ hand: cards("2C"), money: 10 });
+// Hex / Wheel of Fortune joker-edition behavior is covered in run.test.ts ("joker editions
+// (PET-67)"); the describes below pin the PET-90 deltas: Aura's selected-hand-card targeting
+// and Ectoplasm's stacking hand-size downside.
+
+describe("useConsumable — Aura (edition_selected_random) — PET-90", () => {
+  it("applies a random pool edition to the selected hand card and persists it by face code", () => {
+    const run = makeRun({ hand: cards("KH 2C") });
     const id = giveTarot(run, "aura", "inst-au");
-    useConsumable(run, id);
-    expect(run.money).toBe(10);
+    // rng 0 → pool[0] = foil
+    useConsumable(run, id, ["KH"], () => 0);
+    expect(run.hand.find((c) => c.id === "KH")!.edition).toBe("foil");
+    expect(run.deckEnhancements?.["KH"]?.edition).toBe("foil");
+    expect(run.hand.find((c) => c.id === "2C")!.edition).toBeUndefined();
     expect(run.consumables).toEqual([]);
   });
 
-  it("Ectoplasm is consumed but is a no-op (deferred — negative joker edition pending)", () => {
-    const run = makeRun({ hand: cards("2C"), money: 10 });
+  it("rng at the top of the range rolls the last pool edition (poly)", () => {
+    const run = makeRun({ hand: cards("KH") });
+    const id = giveTarot(run, "aura", "inst-au");
+    useConsumable(run, id, ["KH"], () => 0.99);
+    expect(run.hand.find((c) => c.id === "KH")!.edition).toBe("poly");
+  });
+
+  it("requires exactly 1 selected card (not consumed on validation failure)", () => {
+    const run = makeRun({ hand: cards("KH 2C") });
+    const id = giveTarot(run, "aura", "inst-au");
+    expect(() => useConsumable(run, id)).toThrow(GameError);
+    expect(() => useConsumable(run, id, ["KH", "2C"])).toThrow(GameError);
+    expect(run.consumables.length).toBe(1);
+  });
+});
+
+describe("useConsumable — Ectoplasm (negative edition + hand size) — PET-90", () => {
+  it("adds Negative to a random joker AND shrinks handSizeOffset by 1", () => {
+    const run = makeRun({ hand: cards("2C"), jokers: ["joker", "the_duo"] });
     const id = giveTarot(run, "ectoplasm", "inst-ec");
-    useConsumable(run, id);
-    expect(run.money).toBe(10);
+    // rng 0 → jokers[0] ("joker") gets negative.
+    useConsumable(run, id, undefined, () => 0);
+    expect(run.jokerEditions["joker"]).toBe("negative");
+    expect(run.jokerEditions["the_duo"]).toBeUndefined();
+    expect(run.handSizeOffset).toBe(-1);
     expect(run.consumables).toEqual([]);
+  });
+
+  it("stacks: a second Ectoplasm takes handSizeOffset to -2", () => {
+    const run = makeRun({ hand: cards("2C"), jokers: ["joker"] });
+    useConsumable(run, giveTarot(run, "ectoplasm", "inst-e1"), undefined, () => 0);
+    useConsumable(run, giveTarot(run, "ectoplasm", "inst-e2"), undefined, () => 0);
+    expect(run.handSizeOffset).toBe(-2);
+  });
+
+  it("no jokers: edition is skipped but the -1 hand-size downside still applies (Wraith convention)", () => {
+    const run = makeRun({ hand: cards("2C"), jokers: [] });
+    useConsumable(run, giveTarot(run, "ectoplasm", "inst-ec"), undefined, () => 0);
+    expect(Object.keys(run.jokerEditions)).toEqual([]);
+    expect(run.handSizeOffset).toBe(-1);
   });
 });
 

@@ -26,6 +26,8 @@ export interface ConsumableInstance {
 export type ConsumableEffect =
   | { kind: "enhance_selected"; enhancement: CardEnhancement; count: number }
   | { kind: "edition_selected"; edition: CardEdition; count: number }
+  /** Aura: apply ONE random edition (rolled from `pool`) to the selected hand card(s). */
+  | { kind: "edition_selected_random"; pool: ("foil" | "holo" | "poly")[] }
   | { kind: "seal_selected"; seal: CardSeal; count: number }
   | { kind: "create_consumable"; kind2: ConsumableKind; count: number }
   | { kind: "destroy_selected"; max: number }
@@ -67,12 +69,11 @@ export type ConsumableEffect =
   | { kind: "lose_all_money" }
   // ----- joker-edition effects (PET-67) -----
   /**
-   * Aura pattern: apply a random edition (from `pool`) to a random owned joker. Prefers
-   * jokers without an existing edition; falls back to any if all are editioned.
+   * Ectoplasm pattern: apply Negative to a random owned joker (overwrites any edition).
+   * Optional `handSizeDelta` shifts the run's permanent handSizeOffset (Ectoplasm: -1,
+   * stacking per use) — the downside applies even when no joker is owned (Wraith convention).
    */
-  | { kind: "apply_joker_edition_random"; pool: ("foil" | "holo" | "poly")[] }
-  /** Ectoplasm pattern: apply Negative to a random owned joker (overwrites any edition). */
-  | { kind: "apply_joker_edition_negative" }
+  | { kind: "apply_joker_edition_negative"; handSizeDelta?: number }
   /**
    * Hex pattern: apply Polychrome to one random owned joker and destroy every OTHER joker
    * (their states/editions cleared). Optionally also zero the run's money (Wraith composes
@@ -99,7 +100,7 @@ export interface ConsumableDef {
   effect: ConsumableEffect;
 }
 
-/** Tarot catalog — Balatro's 22 majors, minus a handful deferred (Fool/Wheel are noop stubs). */
+/** Tarot catalog — Balatro's 22 majors, minus a handful deferred. */
 // Catalog assembled from ./consumables/*.ts — ONE FILE PER ENTRY (PET-216). Additive entries are
 // new files, never a shared-array edit, so additive PRs cannot merge-conflict. Sorted by id.
 const _consumablesDir = new URL("./consumables/", import.meta.url).pathname;

@@ -345,18 +345,17 @@ describe("joker editions (PET-67)", () => {
     expect(dto.jokers[1]?.edition).toBeUndefined();
   });
 
-  it("Aura applies a random non-noop edition (seeded rng) to a random joker", () => {
-    // rng calls (in order): pick joker index, pick edition index.
-    // With 2 jokers + pool ["foil","holo","poly"]: 0.6 → idx 1 (the_duo), 0.0 → "foil".
+  it("Aura (PET-90) targets the SELECTED hand card, not a joker (rolled edition, seeded rng)", () => {
+    // rng call: pick edition index. Pool ["foil","holo","poly"]: 0.4 → idx 1 ("holo").
     const run = runWith({
-      hand: cards("2C"),
-      jokers: ["joker", "the_duo"],
+      hand: cards("KH 2C"),
+      jokers: ["joker"],
       status: "playing",
     });
     run.consumables.push({ id: "aura-1", defId: "aura" });
-    useConsumable(run, "aura-1", undefined, seqRng(0.6, 0.0));
-    expect(run.jokerEditions.the_duo).toBe("foil");
-    expect(run.jokerEditions.joker).toBeUndefined();
+    useConsumable(run, "aura-1", ["KH"], seqRng(0.4));
+    expect(run.hand.find((c) => c.id === "KH")!.edition).toBe("holo");
+    expect(run.jokerEditions.joker).toBeUndefined(); // jokers untouched
     expect(run.consumables).toEqual([]);
   });
 
@@ -386,6 +385,15 @@ describe("joker editions (PET-67)", () => {
     expect(run.jokerEditions).toEqual({ green_joker: "poly" });
     expect(run.jokerStates).toEqual({ green_joker: { counter: 5 } });
     expect(run.money).toBe(10); // Hex does NOT zero money
+  });
+
+  it("Hex with no jokers is consumed as a no-op (money untouched)", () => {
+    const run = runWith({ hand: cards("2C"), jokers: [], money: 10 });
+    run.consumables.push({ id: "hex-0", defId: "hex" });
+    useConsumable(run, "hex-0", undefined, seqRng(0));
+    expect(run.jokers).toEqual([]);
+    expect(run.money).toBe(10);
+    expect(run.consumables).toEqual([]);
   });
 
   it("Wheel of Fortune: rng < 0.25 applies edition, rng >= 0.25 is a no-op; both consume the slot", () => {
