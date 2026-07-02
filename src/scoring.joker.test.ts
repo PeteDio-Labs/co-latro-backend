@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { defaultHandLevels, handFeatures, scoreHand, type ScoreContext } from "./scoring.ts";
-import { cards } from "./testkit.ts";
+import { card, cards, withMod } from "./testkit.ts";
 
 function ctx(jokers: string[], extra: Partial<ScoreContext> = {}): ScoreContext {
   return { handLevels: defaultHandLevels(), jokers, ...extra };
@@ -137,6 +137,77 @@ describe("PET-74 expansion effects", () => {
     expect(withFace.jokerSteps).toEqual([{ jokerId: "vagabond", name: "Vagabond" }]);
     const noFace = scoreHand(cards("8H 8S 3D 7C 9S"), ctx(["vagabond"]));
     expect(noFace.jokerSteps).toHaveLength(0);
+  });
+});
+
+describe("PET-230 Bucket-B: generalized retrigger effects", () => {
+  it("retrigger_rank (Hack): scored 2/3/4/5 chips score twice; other ranks untouched", () => {
+    // Pair of 2's scored. 2 chip value = 2 each. Without retrigger: (10 + 2+2) × 2 = 28.
+    // With Hack (ranks 2,3,4,5): (10 + 4+4) × 2 = 36.
+    expect(scoreHand(cards("2H 2S 3D 7C 9S"), ctx(["hack"])).score).toBe(36);
+    // Pair of 9's: 9 is not in [2,3,4,5] → no-op, matches baseline.
+    expect(scoreHand(cards("9H 9S 3D 7C KS"), ctx(["hack"])).score).toBe(56); // (10+9+9) × 2
+  });
+
+  it("retrigger_rank composes with retrigger_face on the same hand (Hack + Vagabond)", () => {
+    // Two pair (2's and J's) scored, all four cards contribute chips.
+    // Baseline: (20 + 2+2+10+10) × 2 = 88.
+    // Hack doubles the 2's, Vagabond doubles the J's: (20 + 4+4+20+20) × 2 = 136.
+    expect(scoreHand(cards("2H 2S JD JC 9S"), ctx(["hack", "vagabond"])).score).toBe(136);
+  });
+
+  it("retrigger_rank logs an animation step only when a qualifying rank was scored", () => {
+    const withRank = scoreHand(cards("2H 2S 3D 7C 9S"), ctx(["hack"]));
+    expect(withRank.jokerSteps).toEqual([{ jokerId: "hack", name: "Hack" }]);
+    const withoutRank = scoreHand(cards("9H 9S 3D 7C KS"), ctx(["hack"]));
+    expect(withoutRank.jokerSteps).toHaveLength(0);
+  });
+
+  it("the final-hand gate is isolated per kind: owning only retrigger_rank ignores handsRemaining", () => {
+    // Hack doesn't key off handsRemaining — being on the last hand of the round must not
+    // change its contribution (no owned retrigger_final_hand joker to react to it).
+    const notFinal = scoreHand(cards("2H 2S 3D 7C 9S"), ctx(["hack"], { handsRemaining: 3 })).score;
+    const finalHand = scoreHand(cards("2H 2S 3D 7C 9S"), ctx(["hack"], { handsRemaining: 1 })).score;
+    expect(finalHand).toBe(notFinal);
+  });
+
+  it("retrigger_final_hand (Dusk): scored cards retrigger only on the last hand of the round", () => {
+    // Pair of 9's baseline: (10 + 9+9) × 2 = 56. On the final hand (handsRemaining ≤ 1)
+    // both scored 9's chip twice: (10 + 18+18) × 2 = 92. Earlier hands: no-op.
+    expect(scoreHand(cards("9H 9S 3D 7C KS"), ctx(["dusk"], { handsRemaining: 3 })).score).toBe(56);
+    expect(scoreHand(cards("9H 9S 3D 7C KS"), ctx(["dusk"], { handsRemaining: 1 })).score).toBe(92);
+  });
+
+  it("retrigger_final_hand composes with retrigger_rank (Dusk + Hack) on the final hand", () => {
+    // Pair of 2's on the final hand: each scored 2 retriggers once for Hack (rank) and once
+    // for Dusk (final hand) → chips ×3: (10 + 6+6) × 2 = 44.
+    expect(
+      scoreHand(cards("2H 2S 3D 7C 9S"), ctx(["dusk", "hack"], { handsRemaining: 1 })).score,
+    ).toBe(44);
+  });
+
+  it("retrigger_final_hand logs an animation step only on the final hand", () => {
+    const finalHand = scoreHand(cards("9H 9S 3D 7C KS"), ctx(["dusk"], { handsRemaining: 1 }));
+    expect(finalHand.jokerSteps).toEqual([{ jokerId: "dusk", name: "Dusk" }]);
+    const notFinal = scoreHand(cards("9H 9S 3D 7C KS"), ctx(["dusk"], { handsRemaining: 3 }));
+    expect(notFinal.jokerSteps).toHaveLength(0);
+  });
+
+  it("retrigger_held (Mime): each held steel ability fires an extra time", () => {
+    // Pair of K's baseline: (10 + 10+10) × 2 = 60. One steel card held: ×1.5 → 90.
+    // With Mime the held steel retriggers once more: ×1.5² = ×2.25 → 135.
+    const heldSteel = [withMod(card("2D"), { enhancement: "steel" })];
+    expect(scoreHand(cards("KH KS 3D 7C 9S"), ctx([], { handHeld: heldSteel })).score).toBe(90);
+    const r = scoreHand(cards("KH KS 3D 7C 9S"), ctx(["mime"], { handHeld: heldSteel }));
+    expect(r.score).toBe(135);
+    expect(r.jokerSteps).toEqual([{ jokerId: "mime", name: "Mime" }]);
+  });
+
+  it("retrigger_held is a silent no-op when no held ability exists", () => {
+    // Nothing held (or held cards without abilities) → score matches baseline, no step logged.
+    const r = scoreHand(cards("KH KS 3D 7C 9S"), ctx(["mime"], { handHeld: cards("2D 4C") }));
+    expect(r.score).toBe(60); // (10 + 10+10) × 2
+    expect(r.jokerSteps).toHaveLength(0);
   });
 });
 
