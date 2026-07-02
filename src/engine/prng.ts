@@ -53,15 +53,15 @@ export interface Rng {
   setState(state: number): void;
 }
 
-/**
- * A fresh deterministic stream keyed by `(seed, key)`. Same args → same sequence; distinct keys
- * → independent sequences. The stream carries serializable state (see {@link Rng}).
- */
 /** A single Bernoulli trial: true with probability `chancePct` in 100, drawn from `rng`. */
 export function rollChance(chancePct: number, rng: () => number): boolean {
   return rng() * 100 < chancePct;
 }
 
+/**
+ * A fresh deterministic stream keyed by `(seed, key)`. Same args → same sequence; distinct keys
+ * → independent sequences. The stream carries serializable state (see {@link Rng}).
+ */
 export function makeRng(seed: number, key: string): Rng {
   let state = hashKey(seed, key);
   // mulberry32 stepping, inlined so the counter is observable for get/set.

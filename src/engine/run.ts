@@ -733,6 +733,25 @@ function checkTransition(run: RunState, rng: () => number): void {
         if (c.seal === "blue") levelUpHand(run, handType);
       }
     }
+    // PET-229: chance_mult end-of-round roll — each owned chance joker rolls once through the
+    // injected rng seam (rollChance; never bare Math.random). When the chancePct-in-100 roll
+    // hits, onFail fires: destroy_self removes the joker + its state/edition (same bookkeeping
+    // as sellJoker, no sell value). Rolled BEFORE the shop is generated so a destroyed joker is
+    // gone by the time the shop's joker pool is drawn. Duplicate ids (e.g. via Ankh) each roll
+    // independently; indexOf-splice removes one copy per failed roll.
+    for (const jid of [...run.jokers]) {
+      const def = JOKERS.find((j) => j.id === jid);
+      const eff = def?.effect;
+      if (eff?.kind !== "chance_mult" || eff.onFail !== "destroy_self") continue;
+      if (rollChance(eff.chancePct, rng)) {
+        const idx = run.jokers.indexOf(jid);
+        if (idx >= 0) run.jokers.splice(idx, 1);
+        if (!run.jokers.includes(jid)) {
+          delete run.jokerStates[jid];
+          delete run.jokerEditions[jid];
+        }
+      }
+    }
     const breakdown = cashOutMoney(
       run.blindIndex,
       run.handsRemaining,
