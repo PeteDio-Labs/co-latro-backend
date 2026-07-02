@@ -28,6 +28,11 @@ export type JokerEffect =
   | { kind: "per_remaining_discard_chips"; chips: number } // × discards remaining
   | { kind: "x_mult_contains"; feature: HandFeature; xMult: number } // multiply running mult
   | { kind: "retrigger_face" } // face cards (J/Q/K) score chips twice (scoring-card pre-pass)
+  // PET-230 Bucket-B: generalized retriggering beyond retrigger_face — same "score chips
+  // (1 + N) times" mechanism as retrigger_face, gated on a different condition per kind.
+  | { kind: "retrigger_rank"; ranks: number[] } // scored cards whose rank is in `ranks` retrigger once
+  | { kind: "retrigger_final_hand" } // on the LAST hand of the round (handsRemaining <= 1), all scored cards retrigger once
+  | { kind: "retrigger_held" } // retriggers HELD-in-hand card abilities once more (e.g. steel's ×1.5 stacks an extra time)
   | { kind: "scaling_per_blind_mult"; mult: number } // +mult × counter (counter++ each blind cleared)
   | { kind: "scaling_per_blind_chips"; chips: number } // +chips × counter (counter++ each blind cleared)
   | { kind: "economy_per_hand_played"; dollars: number } // $N at end of each playHand

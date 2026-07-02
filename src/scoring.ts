@@ -191,15 +191,28 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
   const baseChips = base.chips + (level - 1) * per.chips;
   const baseMult = base.mult + (level - 1) * per.mult;
 
-  // Retrigger pre-pass: count owned jokers with retrigger_face so face cards score chips
-  // (1 + retriggerCount) times. Affects the scoring-card chip loop ONLY; the joker fold
-  // still adds an animation step for each retrigger joker but no chip delta there.
+  // Retrigger pre-pass: count owned jokers with retrigger_face / retrigger_rank /
+  // retrigger_final_hand so qualifying scored cards score chips (1 + retriggerCount) times.
+  // retrigger_held is handled separately below (it retriggers HELD-card abilities, not
+  // scored-card chips). Affects the scoring-card chip loop ONLY; the joker fold still adds
+  // an animation step for each retrigger joker but no chip delta there.
   const jokerIds = ctx?.jokers ?? [];
   let retriggerFaceCount = 0;
+  const retriggerRankSets: number[][] = [];
+  let retriggerFinalHandCount = 0;
+  let retriggerHeldCount = 0;
   for (const jid of jokerIds) {
     const def = JOKER_BY_ID.get(jid);
-    if (def?.effect.kind === "retrigger_face") retriggerFaceCount += 1;
+    const effect = def?.effect;
+    if (!effect) continue;
+    if (effect.kind === "retrigger_face") retriggerFaceCount += 1;
+    else if (effect.kind === "retrigger_rank") retriggerRankSets.push(effect.ranks);
+    else if (effect.kind === "retrigger_final_hand") retriggerFinalHandCount += 1;
+    else if (effect.kind === "retrigger_held") retriggerHeldCount += 1;
   }
+  // "Final hand of the round": handsRemaining is captured BEFORE this hand's decrement
+  // (run.ts:scoreCtx runs before run.handsRemaining -= 1), so <= 1 means this IS the last hand.
+  const isFinalHand = (ctx?.handsRemaining ?? Number.POSITIVE_INFINITY) <= 1;
 
   const cardById = new Map(visible.map((c) => [c.id, c]));
   let scoringChips = 0;
@@ -211,8 +224,12 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
       // Face cards retriggered by PET-74's retrigger_face jokers score N+1 times.
       if (card.enhancement !== "stone") {
         const isFace = card.rank >= 11 && card.rank <= 13;
-        const mult = isFace ? 1 + retriggerFaceCount : 1;
-        scoringChips += chipValue(card.rank) * mult;
+        let retriggerCount = isFace ? retriggerFaceCount : 0;
+        for (const ranks of retriggerRankSets) {
+          if (ranks.includes(card.rank)) retriggerCount += 1;
+        }
+        if (isFinalHand) retriggerCount += retriggerFinalHandCount;
+        scoringChips += chipValue(card.rank) * (1 + retriggerCount);
       }
       scoredCards.push(card);
     }
@@ -367,7 +384,13 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
           if (features[e.feature]) mult *= e.xMult;
           break;
         case "retrigger_face":
+        case "retrigger_rank":
+        case "retrigger_final_hand":
           // Chip impact already applied in the scoring-card pre-pass; no fold delta here.
+          break;
+        case "retrigger_held":
+          // Held-card ability impact (steel ×1.5 stacking) is applied AFTER the joker fold,
+          // below; no fold delta here.
           break;
         case "scaling_per_blind_mult": {
           const counter = ctx?.jokerStates?.[jid]?.counter ?? 0;
@@ -398,6 +421,18 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
       } else if (e.kind === "retrigger_face") {
         // Always log an animation step when this joker is owned and there were face cards scored.
         if (scoredCards.some((c) => c.rank >= 11 && c.rank <= 13)) {
+          jokerSteps.push({ jokerId: jid, name: def.name });
+        }
+      } else if (e.kind === "retrigger_rank") {
+        if (scoredCards.some((c) => e.ranks.includes(c.rank))) {
+          jokerSteps.push({ jokerId: jid, name: def.name });
+        }
+      } else if (e.kind === "retrigger_final_hand") {
+        if (isFinalHand && scoredCards.length > 0) {
+          jokerSteps.push({ jokerId: jid, name: def.name });
+        }
+      } else if (e.kind === "retrigger_held") {
+        if (steelHeldCount > 0) {
           jokerSteps.push({ jokerId: jid, name: def.name });
         }
       } else {
@@ -454,8 +489,9 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
 
   // Steel HELD: each steel card still in hand (not scored) multiplies mult by 1.5×, applied
   // AFTER jokers so the steel bonus stacks on top of the joker fold (matches Balatro order).
+  // retrigger_held (PET-230) retriggers each held card's ability an extra time per copy owned.
   if (steelHeldCount > 0) {
-    mult *= Math.pow(1.5, steelHeldCount);
+    mult *= Math.pow(1.5, steelHeldCount * (1 + retriggerHeldCount));
   }
 
   return {

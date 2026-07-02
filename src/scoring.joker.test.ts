@@ -140,6 +140,38 @@ describe("PET-74 expansion effects", () => {
   });
 });
 
+describe("PET-230 Bucket-B: generalized retrigger effects", () => {
+  it("retrigger_rank (Hack): scored 2/3/4/5 chips score twice; other ranks untouched", () => {
+    // Pair of 2's scored. 2 chip value = 2 each. Without retrigger: (10 + 2+2) × 2 = 28.
+    // With Hack (ranks 2,3,4,5): (10 + 4+4) × 2 = 36.
+    expect(scoreHand(cards("2H 2S 3D 7C 9S"), ctx(["hack"])).score).toBe(36);
+    // Pair of 9's: 9 is not in [2,3,4,5] → no-op, matches baseline.
+    expect(scoreHand(cards("9H 9S 3D 7C KS"), ctx(["hack"])).score).toBe(56); // (10+9+9) × 2
+  });
+
+  it("retrigger_rank composes with retrigger_face on the same hand (Hack + Vagabond)", () => {
+    // Two pair (2's and J's) scored, all four cards contribute chips.
+    // Baseline: (20 + 2+2+10+10) × 2 = 88.
+    // Hack doubles the 2's, Vagabond doubles the J's: (20 + 4+4+20+20) × 2 = 136.
+    expect(scoreHand(cards("2H 2S JD JC 9S"), ctx(["hack", "vagabond"])).score).toBe(136);
+  });
+
+  it("retrigger_rank logs an animation step only when a qualifying rank was scored", () => {
+    const withRank = scoreHand(cards("2H 2S 3D 7C 9S"), ctx(["hack"]));
+    expect(withRank.jokerSteps).toEqual([{ jokerId: "hack", name: "Hack" }]);
+    const withoutRank = scoreHand(cards("9H 9S 3D 7C KS"), ctx(["hack"]));
+    expect(withoutRank.jokerSteps).toHaveLength(0);
+  });
+
+  it("the final-hand gate is isolated per kind: owning only retrigger_rank ignores handsRemaining", () => {
+    // Hack doesn't key off handsRemaining — being on the last hand of the round must not
+    // change its contribution (no owned retrigger_final_hand joker to react to it).
+    const notFinal = scoreHand(cards("2H 2S 3D 7C 9S"), ctx(["hack"], { handsRemaining: 3 })).score;
+    const finalHand = scoreHand(cards("2H 2S 3D 7C 9S"), ctx(["hack"], { handsRemaining: 1 })).score;
+    expect(finalHand).toBe(notFinal);
+  });
+});
+
 describe("PET-67 joker editions", () => {
   // baseline pair: (10 + 10+10) × 2 = 60
   it("foil adds +50 chips after the joker contribution", () => {
