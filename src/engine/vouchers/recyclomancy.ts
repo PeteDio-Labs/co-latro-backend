@@ -4,10 +4,10 @@ const def: VoucherDef = {
     id: "recyclomancy",
     name: "Recyclomancy",
     description: "+1 discard per round",
-    cost: 15,
+    cost: 10,
     effect: {
       kind: "extra_discard",
-      amt: 1
+      n: 1
     },
     requires: "wasteful"
 };
