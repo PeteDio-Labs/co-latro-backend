@@ -406,6 +406,11 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
         case "per_5_dollars_mult":
           mult += Math.floor((ctx?.money ?? 0) / 5) * e.mult;
           break;
+        case "chance_mult":
+          // The chance roll (onFail) is an end-of-round concern (run.ts:checkTransition) —
+          // scoring only ever sees the unconditional +mult, same as flat_mult.
+          mult += e.mult;
+          break;
       }
       if (e.kind === "x_mult_contains") {
         if (mult !== beforeMult) jokerSteps.push({ jokerId: jid, name: def.name, xMult: e.xMult });
