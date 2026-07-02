@@ -12,6 +12,10 @@
  *
  * Streams are serializable: `getState()` returns the internal 32-bit counter and `setState()`
  * restores it, so an `rngState` can be persisted mid-run and resume the identical sequence.
+ *
+ * `rollChance` (PET-229) is the shared probability primitive: every "1-in-N" joker effect
+ * (chance_mult's onFail roll, and future chance-based kinds) draws from its owner's injected
+ * rng seam through this one formula, so they stay reproducible under the same seed.
  */
 
 /** mulberry32 — a small, fast, well-distributed 32-bit PRNG. Returns values in [0, 1). */
@@ -53,6 +57,11 @@ export interface Rng {
  * A fresh deterministic stream keyed by `(seed, key)`. Same args → same sequence; distinct keys
  * → independent sequences. The stream carries serializable state (see {@link Rng}).
  */
+/** A single Bernoulli trial: true with probability `chancePct` in 100, drawn from `rng`. */
+export function rollChance(chancePct: number, rng: () => number): boolean {
+  return rng() * 100 < chancePct;
+}
+
 export function makeRng(seed: number, key: string): Rng {
   let state = hashKey(seed, key);
   // mulberry32 stepping, inlined so the counter is observable for get/set.

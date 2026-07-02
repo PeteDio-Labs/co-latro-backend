@@ -33,7 +33,11 @@ export type JokerEffect =
   | { kind: "economy_per_hand_played"; dollars: number } // $N at end of each playHand
   | { kind: "on_discard_chips"; chips: number } // +chips × discardsUsedThisBlind
   | { kind: "flat_chips_and_mult"; chips: number; mult: number } // both at once
-  | { kind: "per_5_dollars_mult"; mult: number }; // +mult × floor(money / 5)
+  | { kind: "per_5_dollars_mult"; mult: number } // +mult × floor(money / 5)
+  // PET-229: unconditional +mult (scored like flat_mult); separately, at end of round, a
+  // chancePct-in-100 roll (src/engine/prng.ts rollChance) may fire onFail. Shared shape for
+  // every "flat Mult + chance to X" joker (Gros Michel, Cavendish, ...).
+  | { kind: "chance_mult"; mult: number; chancePct: number; onFail?: "destroy_self" };
 
 /** Effect kinds whose state lives in run.jokerStates[id] = { counter }. */
 export function isScalingEffect(effect: JokerEffect): boolean {

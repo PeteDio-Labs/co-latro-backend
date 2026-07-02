@@ -69,6 +69,7 @@ import {
   effectiveMaxConsumables,
   effectiveMaxJokers,
 } from "./effectives.ts";
+import { rollChance } from "./prng.ts";
 
 export { GameError } from "./errors.ts";
 
