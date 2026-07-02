@@ -4,7 +4,7 @@ const def: VoucherDef = {
     id: "paint_brush",
     name: "Paint Brush",
     description: "+1 hand size",
-    amount: 1,
+    cost: 10,
     effect: {
       kind: "extra_hand_size",
       n: 1
