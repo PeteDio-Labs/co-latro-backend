@@ -620,3 +620,87 @@ describe("effectiveHandSize (PET-67)", () => {
     expect(run.deck.length).toBe(deckBefore - 1); // only 1 drawn, not 2
   });
 });
+
+describe("chance_mult end-of-round roll — Gros Michel (PET-229)", () => {
+  // rng() * 100 < chancePct (100/6) ⟺ rng() < 1/6 — the destroy branch fires below the
+  // threshold, the survive branch at/above it. All draws go through playHand's injected rng
+  // seam; the same rng also feeds the subsequent shop roll, which is fine (any value works).
+  const grosRun = () =>
+    runWith({
+      hand: cards("KH KS 3D 7C 9S"),
+      target: 50,
+      handsRemaining: 3,
+      jokers: ["gros_michel"],
+      jokerEditions: { gros_michel: "foil" },
+    });
+
+  it("scores the unconditional +15 Mult like flat_mult", () => {
+    const run = grosRun();
+    const result = playHand(run, ["KH", "KS"], () => 0.5);
+    // Pair: base 10 chips × 2 mult; K+K = +20 chips; foil = +50 chips; joker +15 mult →
+    // (10 + 20 + 50) × (2 + 15) = 1360.
+    expect(result.breakdown.score).toBe(1360);
+    expect(result.breakdown.jokerSteps.some((s) => s.jokerId === "gros_michel" && s.deltaMult === 15)).toBe(true);
+  });
+
+  it("destroy branch: a roll under 1/6 destroys the joker at end of round (state/edition cleaned)", () => {
+    const run = grosRun();
+    playHand(run, ["KH", "KS"], () => 0); // 0 < 1/6 → onFail fires
+    expect(run.status).toBe("shop");
+    expect(run.jokers).toEqual([]);
+    expect(run.jokerEditions["gros_michel"]).toBeUndefined();
+    expect(run.jokerStates["gros_michel"]).toBeUndefined();
+  });
+
+  it("survive branch: a roll at/above 1/6 keeps the joker", () => {
+    const run = grosRun();
+    playHand(run, ["KH", "KS"], () => 0.5); // 0.5 ≥ 1/6 → survives
+    expect(run.status).toBe("shop");
+    expect(run.jokers).toEqual(["gros_michel"]);
+    expect(run.jokerEditions["gros_michel"]).toBe("foil");
+  });
+
+  it("no roll happens mid-blind (only end of round)", () => {
+    const run = grosRun();
+    run.target = 1e9; // can't win this hand
+    playHand(run, ["KH", "KS"], () => 0);
+    expect(run.status).toBe("playing");
+    expect(run.jokers).toEqual(["gros_michel"]);
+  });
+
+  it("duplicate copies (Ankh) roll independently — one destroyed, one kept", () => {
+    const run = grosRun();
+    run.jokers = ["gros_michel", "gros_michel"];
+    const seq = [0, 0.5]; // first copy fails its roll, second survives; shop then gets 0.5s
+    let i = 0;
+    playHand(run, ["KH", "KS"], () => (i < seq.length ? seq[i++]! : 0.5));
+    expect(run.jokers).toEqual(["gros_michel"]);
+    // A surviving copy keeps its edition/state.
+    expect(run.jokerEditions["gros_michel"]).toBe("foil");
+  });
+
+  it("is seed-reproducible through the engine's keyed rng stream", () => {
+    const { makeRng } = require("./prng.ts") as typeof import("./prng.ts");
+    const outcome = (seed: number): boolean => {
+      const run = grosRun();
+      playHand(run, ["KH", "KS"], makeRng(seed, "round_end"));
+      return run.jokers.length === 1;
+    };
+    for (const seed of [1, 42, 1337]) {
+      expect(outcome(seed)).toBe(outcome(seed)); // same seed → same branch
+    }
+  });
+});
+
+describe("rollChance (PET-229)", () => {
+  const { rollChance } = require("./prng.ts") as typeof import("./prng.ts");
+
+  it("fires with probability chancePct in 100 (boundary semantics)", () => {
+    expect(rollChance(100 / 6, () => 0)).toBe(true);
+    expect(rollChance(100 / 6, () => 0.16)).toBe(true); // just inside 1-in-6
+    expect(rollChance(100 / 6, () => 0.17)).toBe(false); // just outside
+    expect(rollChance(100 / 6, () => 0.999999)).toBe(false);
+    expect(rollChance(0, () => 0)).toBe(false); // 0% never fires
+    expect(rollChance(100, () => 0.999999)).toBe(true); // 100% always fires
+  });
+});

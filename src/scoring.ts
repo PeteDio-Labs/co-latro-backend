@@ -96,6 +96,9 @@ export interface ScoreContext {
   handHeld?: Card[];
   /** Transient flat mult bonus consumed by the next scored hand (PET-78 mult_add_next_hand tag). */
   nextHandMultBonus?: number;
+  /** The Flint (PET-239): halve the level-adjusted base chips AND base mult (ceil, so a level-1
+   *  high card still scores). Set by run.ts when the active boss is halve_base_target_bonus. */
+  halveBase?: boolean;
 }
 
 /** One joker's contribution during scoring — drives the play-resolution animation. */
@@ -188,8 +191,14 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
   const level = ctx?.handLevels[handType] ?? 1;
   const base = BASE_VALUES[handType];
   const per = PER_LEVEL[handType];
-  const baseChips = base.chips + (level - 1) * per.chips;
-  const baseMult = base.mult + (level - 1) * per.mult;
+  let baseChips = base.chips + (level - 1) * per.chips;
+  let baseMult = base.mult + (level - 1) * per.mult;
+  // The Flint (PET-239): halve the level-adjusted base values. Ceil keeps a level-1 high card
+  // scoring (mult 1 → 1, not 0) — documented simplification of Balatro's ×0.5.
+  if (ctx?.halveBase) {
+    baseChips = Math.ceil(baseChips / 2);
+    baseMult = Math.ceil(baseMult / 2);
+  }
 
   // Retrigger pre-pass: count owned jokers with retrigger_face / retrigger_rank /
   // retrigger_final_hand so qualifying scored cards score chips (1 + retriggerCount) times.
@@ -220,6 +229,10 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
   for (const id of scoringCardIds) {
     const card = cardById.get(id);
     if (card) {
+      // Debuffed cards (PET-239): they shaped the hand (evaluateHand saw them) but contribute
+      // NOTHING — no rank chips, and by staying out of scoredCards they skip the modifier
+      // pre-pass and every per-card joker count below.
+      if (card.debuffed) continue;
       // Stone cards (PET-75): rank-less; +50 chips comes from the enhancement pre-pass, not chipValue.
       // Face cards retriggered by PET-74's retrigger_face jokers score N+1 times.
       if (card.enhancement !== "stone") {
@@ -319,7 +332,8 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
     // selection is still considered "played" and excluded from the held bonus.
     const playedIds = new Set(played.map((c) => c.id));
     for (const c of ctx.handHeld) {
-      if (c.enhancement === "steel" && !playedIds.has(c.id)) steelHeldCount += 1;
+      // Debuffed steel (PET-239 — e.g. Verdant Leaf debuffs held cards too) doesn't trigger.
+      if (c.enhancement === "steel" && !c.debuffed && !playedIds.has(c.id)) steelHeldCount += 1;
     }
   }
 
@@ -414,6 +428,11 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
           break;
         case "per_5_dollars_mult":
           mult += Math.floor((ctx?.money ?? 0) / 5) * e.mult;
+          break;
+        case "chance_mult":
+          // The chance roll (onFail) is an end-of-round concern (run.ts:checkTransition) —
+          // scoring only ever sees the unconditional +mult, same as flat_mult.
+          mult += e.mult;
           break;
       }
       if (e.kind === "x_mult_contains") {

@@ -97,6 +97,24 @@ describe("vouchers — shop slot gating", () => {
     expect(sawMoneyTree).toBe(true);
   });
 
+  it("Palette is hidden from the shop until Paint Brush is owned (PET-228)", () => {
+    const run = startRun("medium", "u");
+    for (let i = 0; i < 20; i++) {
+      const shop = generateShop(run, () => i / 20);
+      expect(shop.voucher?.voucherId).not.toBe("palette");
+    }
+    run.vouchers.push("paint_brush");
+    let sawPalette = false;
+    for (let i = 0; i < 200; i++) {
+      const shop = generateShop(run, () => i / 200);
+      if (shop.voucher?.voucherId === "palette") {
+        sawPalette = true;
+        break;
+      }
+    }
+    expect(sawPalette).toBe(true);
+  });
+
   it("does not roll an already-owned voucher (empty pool → null slot)", () => {
     const run = startRun("medium", "u");
     // Own every voucher; pool should be empty.
@@ -115,6 +133,7 @@ describe("vouchers — shop slot gating", () => {
       "fortune_scale",
       "palette",
       "paint_brush",
+      "recyclomancy",
     ];
     const shop = generateShop(run, () => 0.5);
     expect(shop.voucher).toBeNull();
