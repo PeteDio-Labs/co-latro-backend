@@ -29,6 +29,13 @@ export interface Card {
    * (flipped to false) when played — so the play animation can show what they actually were.
    */
   faceDown?: boolean;
+  /**
+   * Boss-effect overlay (PET-239). True while the card is debuffed (The Club/Goad/Window/Head,
+   * The Plant, The Pillar, Verdant Leaf). Debuffed cards still SHAPE the poker hand but score
+   * no chips and trigger no enhancements/editions/seals/jokers. Computed per-view (toRunDTO /
+   * scoring) from the run's boss state — never persisted onto the deck.
+   */
+  debuffed?: boolean;
 }
 
 export const ALL_SUITS: readonly Suit[] = ["clubs", "diamonds", "hearts", "spades"];

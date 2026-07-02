@@ -23,6 +23,21 @@ function seqRng(...values: number[]): () => number {
   return () => values[i++ % values.length]!;
 }
 
+/** Non-finisher pool — what rollBossEffect draws from on antes 1–7. */
+const REGULAR_POOL = BOSS_EFFECTS.filter((b) => !b.finisher);
+
+/**
+ * A constant rng value that makes rollBossEffect(ante < 8) pick `id`, robust to catalog growth.
+ * `bump` ∈ (0,1) shifts within the index bucket — some tests need the constant to ALSO steer
+ * later rolls (e.g. keep The Wheel's 1-in-7 flip from firing: bump high enough that the
+ * constant exceeds 1/7).
+ */
+function rollFor(id: string, bump = 0.5): number {
+  const idx = REGULAR_POOL.findIndex((b) => b.id === id);
+  if (idx < 0) throw new Error(`not a regular boss: ${id}`);
+  return (idx + bump) / REGULAR_POOL.length;
+}
+
 function bossRunBase(over: Partial<RunState> = {}): RunState {
   return {
     runId: "test",
@@ -69,15 +84,32 @@ function bossRunBase(over: Partial<RunState> = {}): RunState {
 }
 
 describe("BOSS_EFFECTS catalog", () => {
-  it("contains the 5 PET-83 entries with unique ids", () => {
+  it("keeps the 5 PET-83 entries first (stable roll indexes) with unique ids overall", () => {
     const ids = BOSS_EFFECTS.map((b) => b.id);
-    expect(ids).toEqual(["the_needle", "the_wall", "the_hook", "the_wheel", "the_mark"]);
+    expect(ids.slice(0, 5)).toEqual(["the_needle", "the_wall", "the_hook", "the_wheel", "the_mark"]);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("contains the PET-239 debuff family and PET-240 restriction family + finishers", () => {
+    const ids = new Set(BOSS_EFFECTS.map((b) => b.id));
+    for (const id of [
+      // PET-239 — debuff family (The Club exemplar)
+      "the_club", "the_goad", "the_window", "the_head", "the_plant", "the_pillar",
+      "the_flint", "the_manacle",
+      // PET-240 — restriction/state family (The Psychic exemplar)
+      "the_psychic", "the_eye", "the_mouth", "the_arm", "the_ox", "the_water",
+      "the_serpent", "the_fish", "the_house", "the_tooth",
+      // PET-240 — ante-8 finishers
+      "amber_acorn", "verdant_leaf", "violet_vessel", "crimson_heart", "cerulean_bell",
+    ]) {
+      expect(ids.has(id)).toBe(true);
+    }
   });
 
   it("the_wall declares a 1.5× target multiplier; others default to 1×", () => {
     expect(BOSS_EFFECT_BY_ID.get("the_wall")?.targetMult).toBe(1.5);
     expect(effectiveBossTargetMult("the_wall")).toBe(1.5);
+    expect(effectiveBossTargetMult("violet_vessel")).toBe(3);
     expect(effectiveBossTargetMult("the_needle")).toBe(1);
     expect(effectiveBossTargetMult("the_hook")).toBe(1);
     expect(effectiveBossTargetMult("the_wheel")).toBe(1);
@@ -94,10 +126,19 @@ describe("rollBossEffect", () => {
     expect(BOSS_EFFECT_BY_ID.has(id!)).toBe(true);
   });
 
-  it("picks uniformly across the catalog (indexes from rng() × length)", () => {
-    // rng=0 → first; rng just under 1 → last.
-    expect(rollBossEffect(1, () => 0)).toBe(BOSS_EFFECTS[0]!.id);
-    expect(rollBossEffect(1, () => 0.9999)).toBe(BOSS_EFFECTS[BOSS_EFFECTS.length - 1]!.id);
+  it("picks uniformly across the non-finisher pool (indexes from rng() × pool length)", () => {
+    // rng=0 → first regular; rng just under 1 → last regular.
+    expect(rollBossEffect(1, () => 0)).toBe(REGULAR_POOL[0]!.id);
+    expect(rollBossEffect(1, () => 0.9999)).toBe(REGULAR_POOL[REGULAR_POOL.length - 1]!.id);
+  });
+
+  it("finishers only roll on the final ante; regular bosses never do", () => {
+    const finishers = new Set(BOSS_EFFECTS.filter((b) => b.finisher).map((b) => b.id));
+    expect(finishers.size).toBeGreaterThan(0);
+    for (const r of [0, 0.25, 0.5, 0.75, 0.9999]) {
+      expect(finishers.has(rollBossEffect(7, () => r)!)).toBe(false);
+      expect(finishers.has(rollBossEffect(8, () => r)!)).toBe(true);
+    }
   });
 });
 
@@ -114,11 +155,10 @@ describe("the_needle", () => {
 
 describe("the_wall", () => {
   it("startBlind multiplies the boss-blind target by 1.5", () => {
-    // Pick "the_wall" (index 1) deterministically: 1 / 5 = 0.2.
     const run = startRun("medium", "u1");
     run.blindIndex = 2; // boss
     const base = blindTarget(run.ante, 2, run.difficulty); // ante 1 boss medium
-    startBlind(run, () => 0.2);
+    startBlind(run, () => rollFor("the_wall"));
     expect(run.currentBossEffect).toBe("the_wall");
     expect(run.target).toBe(Math.round(base * 1.5));
   });
@@ -163,21 +203,21 @@ describe("the_hook", () => {
 
 describe("the_wheel + the_mark — base target / hands untouched", () => {
   it("leave the boss-blind target and hands-remaining at the defaults", () => {
-    // the_wheel index 3 → rng 3/5 = 0.6
     const wheelRun = startRun("medium", "u1");
     wheelRun.blindIndex = 2;
     const baseTarget = blindTarget(wheelRun.ante, 2, wheelRun.difficulty);
-    // Constant rng = 0.6: shuffle/rolls all return 0.6, which (>1/7) never triggers
-    // applyFaceDownEffect's wheel flip but still selects boss index 3 (the_wheel).
-    startBlind(wheelRun, () => 0.6);
+    // Constant rng: bump 0.9 keeps the constant above 1/7 so applyFaceDownEffect's wheel
+    // flip never triggers, while still selecting the_wheel's index bucket.
+    const wheelConst = rollFor("the_wheel", 0.9);
+    expect(wheelConst).toBeGreaterThan(1 / 7);
+    startBlind(wheelRun, () => wheelConst);
     expect(wheelRun.currentBossEffect).toBe("the_wheel");
     expect(wheelRun.target).toBe(baseTarget); // no multiplier
     expect(wheelRun.handsRemaining).toBe(4); // medium default — not clamped
 
-    // the_mark index 4 → rng 4/5 = 0.8
     const markRun = startRun("medium", "u1");
     markRun.blindIndex = 2;
-    startBlind(markRun, () => 0.8);
+    startBlind(markRun, () => rollFor("the_mark"));
     expect(markRun.currentBossEffect).toBe("the_mark");
     expect(markRun.target).toBe(baseTarget);
     expect(markRun.handsRemaining).toBe(4);
@@ -243,7 +283,7 @@ describe("the_mark — every face card dealt face-down", () => {
   it("startBlind on a boss blind with the_mark flips every face card in the dealt hand", () => {
     const markRun = startRun("medium", "u1");
     markRun.blindIndex = 2; // boss
-    startBlind(markRun, () => 0.8); // index 4/5 → the_mark
+    startBlind(markRun, () => rollFor("the_mark"));
     expect(markRun.currentBossEffect).toBe("the_mark");
     const faceDownCount = markRun.hand.filter((c) => c.faceDown).length;
     const expectedFaces = markRun.hand.filter((c) => c.rank >= 11 && c.rank <= 13).length;

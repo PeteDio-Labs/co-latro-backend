@@ -8,6 +8,7 @@
 
 import { HAND_SIZE } from "../difficulty.ts";
 import { DEFAULT_INTEREST_CAP } from "./ante.ts";
+import { bossEffectOf } from "./boss.ts";
 import { MAX_JOKERS } from "./jokers.ts";
 import type { RunState } from "./run.ts";
 import { VOUCHER_BY_ID, type VoucherEffect } from "./vouchers.ts";
@@ -80,11 +81,14 @@ export function effectiveExtraHandSize(run: RunState): number {
 
 /**
  * Effective hand size for the run: base HAND_SIZE + voucher extras + run-long offset
- * (Ouija/Ectoplasm-style downsides land in run.handSizeOffset). Floored at 1 so a stacked
- * downside can never deadlock a blind by dealing 0 cards.
+ * (Ouija/Ectoplasm-style downsides land in run.handSizeOffset) + the active boss's
+ * reduce_hand_size delta (The Manacle, PET-239 — blind-scoped, clears with the boss effect).
+ * Floored at 1 so a stacked downside can never deadlock a blind by dealing 0 cards.
  */
 export function effectiveHandSize(run: RunState): number {
-  const total = HAND_SIZE + effectiveExtraHandSize(run) + (run.handSizeOffset ?? 0);
+  const bossEffect = bossEffectOf(run.currentBossEffect);
+  const bossDelta = bossEffect?.kind === "reduce_hand_size" ? -bossEffect.n : 0;
+  const total = HAND_SIZE + effectiveExtraHandSize(run) + (run.handSizeOffset ?? 0) + bossDelta;
   return Math.max(1, total);
 }
 

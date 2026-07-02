@@ -64,6 +64,48 @@ describe("toRunDTO — owned consumables carry needsSelection (PET-71 selection 
   });
 });
 
+describe("toRunDTO — top-level wire shape (PET-92 chokepoint guard)", () => {
+  it("emits exactly the RunStateDTO keys the FE consumes (drift tripwire)", () => {
+    const dto = toRunDTO(startRun("medium", "u"));
+    expect(Object.keys(dto).sort()).toEqual(
+      [
+        "ante", "blindIndex", "blindKind", "bossEffect", "bossForcedCardId", "consumables",
+        "deckId", "deckName", "deckRemaining", "difficulty", "discardsRemaining", "hand",
+        "handLevels", "handSize", "handsRemaining", "jokers", "lastPlay", "maxAnte",
+        "maxConsumables", "maxJokers", "maxSelect", "money", "openingPack", "pendingReward",
+        "pendingRewardBreakdown", "runId", "shop", "skipsThisRun", "status", "tags", "target",
+        "totalScore", "vouchers",
+      ].sort(),
+    );
+  });
+});
+
+describe("toRunDTO — boss-effect state reaches the wire (PET-239/240)", () => {
+  it("stamps debuffed on affected hand cards without touching server state", () => {
+    const run = startRun("medium", "u");
+    run.currentBossEffect = "the_club";
+    run.hand = [
+      { id: "2C", rank: 2, suit: "clubs" },
+      { id: "5D", rank: 5, suit: "diamonds" },
+    ];
+    const dto = toRunDTO(run);
+    expect(dto.hand.find((c) => c.id === "2C")?.debuffed).toBe(true);
+    expect(dto.hand.find((c) => c.id === "5D")?.debuffed).toBeUndefined();
+    expect(run.hand[0]!.debuffed).toBeUndefined(); // view-time overlay only
+  });
+
+  it("emits bossForcedCardId (null default) and the disabled joker flag", () => {
+    const run = startRun("medium", "u");
+    expect(toRunDTO(run).bossForcedCardId).toBeNull();
+    run.jokers = ["joker"];
+    run.bossDisabledJoker = "joker";
+    run.bossForcedCardId = "KH-0";
+    const dto = toRunDTO(run);
+    expect(dto.bossForcedCardId).toBe("KH-0");
+    expect(dto.jokers[0]!.disabled).toBe(true);
+  });
+});
+
 describe("shop DTO — tile fields match the FE contract", () => {
   it("consumable tile emits defId + consumableKind (not consumableId)", () => {
     const run = shopWith("consumable");

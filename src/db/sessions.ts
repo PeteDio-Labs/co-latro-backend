@@ -49,6 +49,13 @@ function normalizeRun(state: RunState): RunState {
   s.openingPack ??= null;
   // PET-75 card modifier overlay — older saves predate this.
   s.deckEnhancements ??= {};
+  // PET-239/240 boss-effect state — older saves predate the boss-effect system.
+  s.facesPlayedThisAnte ??= [];
+  s.handTypesPlayedThisBlind ??= [];
+  s.handTypePlays ??= {};
+  s.bossForcedCardId ??= null;
+  s.bossDisabledJoker ??= null;
+  s.jokerSoldThisBlind ??= false;
   // Persisted shop state may pre-date the voucher slot — default it to null.
   if (s.shop && typeof s.shop === "object") {
     const sh = s.shop as Record<string, unknown>;
