@@ -58,9 +58,12 @@ import { TAGS, TAG_BY_ID, type TagTrigger } from "./tags.ts";
 import {
   BOSS_EFFECT_BY_ID,
   applyFaceDownEffect,
+  bossEffectOf,
+  decorateDebuffs,
   effectiveBossTargetMult,
   rollBossEffect,
 } from "./boss.ts";
+import { evaluateHand } from "../evaluator.ts";
 import {
   effectiveExtraDiscards,
   effectiveExtraHands,
@@ -161,6 +164,20 @@ export interface RunState {
    */
   lastConsumableUsedDefId: string | null;
 
+  // ----- boss-effect state (PET-239/240; optional so legacy persisted runs deserialize) -----
+  /** Face codes played earlier this ante — The Pillar's debuff set. Reset when the ante advances. */
+  facesPlayedThisAnte?: string[];
+  /** Hand types played this blind — The Eye / The Mouth restrictions. Reset each startBlind. */
+  handTypesPlayedThisBlind?: HandType[];
+  /** Run-long play counts per hand type — The Ox's "most played hand". */
+  handTypePlays?: Partial<Record<HandType, number>>;
+  /** Cerulean Bell: the card that MUST be in every play/discard selection. Repicked on draw. */
+  bossForcedCardId?: string | null;
+  /** Crimson Heart: the joker excluded from scoring this hand. Repicked after each play. */
+  bossDisabledJoker?: string | null;
+  /** Verdant Leaf: flips true when a joker is sold this blind, releasing the all-cards debuff. */
+  jokerSoldThisBlind?: boolean;
+
   /**
    * Per-FACE modifier overlay persisted across shuffles. Keys are face codes ("KH"), so every
    * instance of that face inherits the modifier on the next deal — Balatro's per-instance
@@ -186,6 +203,8 @@ export interface JokerView {
   sellValue: number;
   /** Per-joker edition (frontend renders via .card-foil/.card-holo/.card-poly classes). */
   edition?: "foil" | "holo" | "poly" | "negative";
+  /** Crimson Heart (PET-240): true while this joker is disabled and excluded from scoring. */
+  disabled?: boolean;
 }
 
 /** A consumable as the client sees it (resolved from CONSUMABLE_BY_ID). */
@@ -271,6 +290,8 @@ export interface RunStateDTO {
   vouchers: VoucherView[];
   tags: TagView[];
   bossEffect: BossEffectView | null;
+  /** Cerulean Bell (PET-240): id of the card that must be in every play/discard selection. */
+  bossForcedCardId: string | null;
   skipsThisRun: number;
   /** Non-null while status === "pack_open" — the contents/picks the picker UI renders. */
   openingPack: OpeningPackDTO | null;
@@ -315,12 +336,16 @@ export function toRunDTO(run: RunState): RunStateDTO {
         cost: def.cost,
         sellValue: sellValue(def.cost),
         ...(edition ? { edition } : {}),
+        // Crimson Heart (PET-240): surface the per-hand disabled joker so the FE can grey it.
+        ...(run.bossDisabledJoker === id ? { disabled: true } : {}),
       };
     }),
     maxJokers: effectiveMaxJokers(run),
     target: run.target,
     totalScore: run.totalScore,
-    hand: run.hand,
+    // PET-239: stamp `debuffed` flags so the FE can render boss-debuffed cards greyed out.
+    // Returns run.hand untouched when no debuff-capable boss is active.
+    hand: decorateDebuffs(run, run.hand),
     handSize: run.hand.length,
     maxSelect: MAX_SELECT,
     handsRemaining: run.handsRemaining,
@@ -359,6 +384,7 @@ export function toRunDTO(run: RunState): RunStateDTO {
       const def = BOSS_EFFECT_BY_ID.get(run.currentBossEffect);
       return def ? { id: def.id, name: def.name, description: def.description } : null;
     })(),
+    bossForcedCardId: run.bossForcedCardId ?? null,
     skipsThisRun: run.skipsThisRun,
     openingPack: toOpeningPackDTO(run.openingPack),
   };
@@ -404,6 +430,12 @@ export function startRun(difficulty: Difficulty, userId: string, deckId = "stand
     freeVoucherPending: false,
     handSizeOffset: 0,
     lastConsumableUsedDefId: null,
+    facesPlayedThisAnte: [],
+    handTypesPlayedThisBlind: [],
+    handTypePlays: {},
+    bossForcedCardId: null,
+    bossDisabledJoker: null,
+    jokerSoldThisBlind: false,
     deckEnhancements: {},
     openingPack: null,
     createdAt: now,
@@ -419,10 +451,11 @@ export function startBlind(run: RunState, rng: () => number = Math.random): void
   const faces: Face[] = run.deckComposition.map(parseFace);
   const decorated = decorateWithModifiers(instantiateDeck(faces), run.deckEnhancements);
   const deck = shuffle(decorated, rng);
+  // Roll the boss effect BEFORE dealing so hand-size effects (The Manacle) shape the deal.
+  // rng order is unchanged vs the old code: shuffle drew first, then the roll — still true.
+  run.currentBossEffect = blindKind(run.blindIndex) === "boss" ? rollBossEffect(run.ante, rng) : null;
   run.hand = deck.splice(0, effectiveHandSize(run));
   run.deck = deck;
-  // Roll the boss effect first so its modifiers fold into target / handsRemaining below.
-  run.currentBossEffect = blindKind(run.blindIndex) === "boss" ? rollBossEffect(run.ante, rng) : null;
   const baseTarget = blindTarget(run.ante, run.blindIndex, run.difficulty);
   run.target = Math.round(baseTarget * effectiveBossTargetMult(run.currentBossEffect));
   run.totalScore = 0;
@@ -430,17 +463,21 @@ export function startBlind(run: RunState, rng: () => number = Math.random): void
   const perk = getDeck(run.deckId).perk;
   run.handsRemaining = tuning.hands + (perk.extraHands ?? 0) + effectiveExtraHands(run);
   run.discardsRemaining = tuning.discards + (perk.extraDiscards ?? 0) + effectiveExtraDiscards(run);
-  // The Needle: only 1 hand allowed this blind (applied after standard assignment).
-  if (run.currentBossEffect === "the_needle") run.handsRemaining = 1;
   run.lastPlay = null;
   run.pendingReward = null;
   run.pendingRewardBreakdown = null;
   run.discardsUsedThisBlind = 0;
+  // Per-blind boss trackers (PET-239/240) reset whether or not a boss effect is active.
+  run.handTypesPlayedThisBlind = [];
+  run.jokerSoldThisBlind = false;
+  run.bossForcedCardId = null;
+  run.bossDisabledJoker = null;
   run.status = "playing";
-  if (run.currentBossEffect) applyBossEffect(run, "start");
-  // PET-83: Wheel/Mark flip a subset of the freshly-dealt hand face-down. Run after
-  // applyBossEffect (which is currently a content-stream hook) but before tags fire.
-  applyFaceDownEffect(run.hand, run.currentBossEffect, rng);
+  // Start-phase boss effects: needle clamp, 0 discards, forced card, disabled joker, shuffle.
+  if (run.currentBossEffect) applyBossEffect(run, "start", rng);
+  // PET-83/240: Wheel/Mark/House flip (a subset of) the freshly-dealt hand face-down. Run after
+  // applyBossEffect but before tags fire.
+  applyFaceDownEffect(run.hand, run.currentBossEffect, rng, "deal");
   applyTags(run, "on_next_blind_start", rng);
 }
 
@@ -458,6 +495,10 @@ export function sellJoker(run: RunState, jokerId: unknown): void {
   run.jokers.splice(idx, 1);
   delete run.jokerStates[jokerId];
   delete run.jokerEditions[jokerId];
+  // Verdant Leaf (PET-240): selling any joker this blind releases the all-cards debuff.
+  run.jokerSoldThisBlind = true;
+  // Crimson Heart: a sold joker can't stay disabled.
+  if (run.bossDisabledJoker === jokerId) run.bossDisabledJoker = null;
 }
 
 /** Move a joker one slot left/right (order affects scoring). Edge moves are no-ops. */
@@ -481,17 +522,24 @@ export function moveJoker(run: RunState, jokerId: unknown, dir: unknown): void {
 }
 
 function scoreCtx(run: RunState): ScoreContext {
+  const bossEffect = bossEffectOf(run.currentBossEffect);
   return {
     handLevels: run.handLevels,
-    jokers: run.jokers,
+    // Crimson Heart (PET-240): the disabled joker is excluded from the scoring fold entirely.
+    jokers: run.bossDisabledJoker
+      ? run.jokers.filter((id) => id !== run.bossDisabledJoker)
+      : run.jokers,
     handsRemaining: run.handsRemaining,
     discardsRemaining: run.discardsRemaining,
     discardsUsedThisBlind: run.discardsUsedThisBlind,
     money: run.money,
     jokerStates: run.jokerStates,
     jokerEditions: run.jokerEditions,
-    handHeld: run.hand,
+    // PET-239: held-card effects (steel) must respect boss debuffs too.
+    handHeld: decorateDebuffs(run, run.hand),
     nextHandMultBonus: run.nextHandMultBonus,
+    // The Flint (PET-239): halve the level-adjusted base chips + mult.
+    halveBase: bossEffect?.kind === "halve_base_target_bonus" || undefined,
   };
 }
 
@@ -516,7 +564,8 @@ function decorateWithModifiers(
 /** Non-mutating: validate the selection and return what it WOULD score (with this run's hand levels). */
 export function previewSelection(run: RunState, selectedIds: unknown): ScoreBreakdown {
   const selected = resolveSelection(run, selectedIds);
-  return scoreHand(selected, scoreCtx(run));
+  // Same debuff decoration as the play path so preview and play can never drift (PET-239).
+  return scoreHand(decorateDebuffs(run, selected), scoreCtx(run));
 }
 
 export function playHand(
@@ -528,21 +577,41 @@ export function playHand(
   const selected = resolveSelection(run, selectedIds);
   const ids = selected.map((c) => c.id);
 
+  // Boss play restrictions (PET-240): must_play_n / hand-type locks / forced card. Validate
+  // BEFORE any mutation so a rejected play leaves the run untouched (no free reveals).
+  assertBossPlayLegal(run, selected, rng);
+
   // PET-83: face-down cards are revealed at play time. Flip them BEFORE scoring so the
   // played-card list in lastPlay shows real ranks/suits to the FE animation, but they
-  // remain excluded from chips/mult via scoreHand's pre-filter on the persisted overlay.
-  // We capture which were face-down so scoring uses a faceDown-tagged copy.
-  const playedForScoring = selected.map((c) => ({ ...c }));
+  // remain excluded from chips/mult via scoreHand's pre-filter on the faceDown-tagged copy.
+  // PET-239: the copies also carry `debuffed` flags so boss-debuffed cards score nothing.
+  const playedForScoring = decorateDebuffs(run, selected).map((c) => ({ ...c }));
   for (const c of selected) if (c.faceDown) c.faceDown = false;
 
-  // Hook for boss effects that mutate selection/scoring before resolution (PET-78).
-  if (run.currentBossEffect) applyBossEffect(run, "play");
+  // The Arm (PET-240): level down the played hand type BEFORE scoring (min level 1).
+  if (bossEffectOf(run.currentBossEffect)?.kind === "level_down_played_hand") {
+    const t = visibleHandType(playedForScoring);
+    run.handLevels[t] = Math.max(1, (run.handLevels[t] ?? 1) - 1);
+  }
 
   const breakdown = scoreHand(playedForScoring, scoreCtx(run));
   // PET-78 mult_add_next_hand: one-shot transient bonus, consumed by this hand.
   run.nextHandMultBonus = 0;
   run.totalScore += breakdown.score;
   run.handsRemaining -= 1;
+
+  // Boss money effects (PET-240) — The Ox reads handTypePlays BEFORE this hand is recorded.
+  applyBossEffect(run, "play", rng, { cardsPlayed: selected.length, handType: breakdown.handType });
+  // Run trackers feeding The Eye / The Mouth / The Ox / The Pillar. Recorded unconditionally
+  // (cheap) so a boss rolled later in the ante sees the full history.
+  run.handTypesPlayedThisBlind = [...(run.handTypesPlayedThisBlind ?? []), breakdown.handType];
+  run.handTypePlays = {
+    ...(run.handTypePlays ?? {}),
+    [breakdown.handType]: ((run.handTypePlays ?? {})[breakdown.handType] ?? 0) + 1,
+  };
+  const anteFaces = new Set(run.facesPlayedThisAnte ?? []);
+  for (const c of selected) anteFaces.add(faceCode({ rank: c.rank, suit: c.suit }));
+  run.facesPlayedThisAnte = [...anteFaces];
 
   // PET-75: lucky cards scored grant a deterministic +$1 EV (real Balatro is 1/15 × $20).
   // Apply BEFORE removing them from hand so we count the actually-scored set.
@@ -574,16 +643,25 @@ export function playHand(
   // Refill to the current effective hand size (NOT just selected.length) so consumables that
   // shrink/grow the hand mid-blind (e.g. Ouija -1) propagate on the next draw. Cards already
   // in hand stay — we never retroactively shrink the visible hand.
-  drawToHandSize(run, rng);
+  // (The Serpent overrides this with a fixed 3-card draw — see refillAfterAction.)
+  refillAfterAction(run, rng);
 
   // Economy jokers pay out at end of each hand played (before the shop transition so the
   // money shows on the shop screen). Tolerate unknown ids (tests stuff synthetic joker ids).
+  // A Crimson-Heart-disabled joker doesn't pay this hand.
   for (const jid of run.jokers) {
+    if (jid === run.bossDisabledJoker) continue;
     const def = JOKERS.find((j) => j.id === jid);
     if (def?.effect.kind === "economy_per_hand_played") run.money += def.effect.dollars;
   }
-  // The Hook (PET-83): at the end of each played hand, discard 2 random cards and redraw.
-  if (run.currentBossEffect === "the_hook") applyHookDiscard(run, rng);
+  // The Hook (PET-83): at the end of each played hand, discard N random cards and redraw.
+  const bossEffect = bossEffectOf(run.currentBossEffect);
+  if (bossEffect?.kind === "discard_on_play") applyHookDiscard(run, rng, bossEffect.n);
+
+  // Post-draw boss repicks (PET-240): Crimson Heart rotates its disabled joker each hand;
+  // Cerulean Bell re-forces a card once the previous forced card leaves the hand.
+  if (bossEffect?.kind === "disable_random_joker_per_hand") pickDisabledJoker(run, rng);
+  if (bossEffect?.kind === "force_card_selection") ensureForcedCard(run, rng);
 
   const result: PlayResult = { playedCardIds: ids, playedCards: selected, breakdown };
   run.lastPlay = result;
@@ -591,9 +669,9 @@ export function playHand(
   return result;
 }
 
-/** The Hook: remove up to 2 random cards from hand and draw replacements (capped by deck). */
-function applyHookDiscard(run: RunState, rng: () => number): void {
-  const toRemove = Math.min(2, run.hand.length);
+/** The Hook: remove up to N random cards from hand and draw replacements (capped by deck). */
+function applyHookDiscard(run: RunState, rng: () => number, n: number): void {
+  const toRemove = Math.min(n, run.hand.length);
   for (let i = 0; i < toRemove; i++) {
     const idx = Math.floor(rng() * run.hand.length);
     run.hand.splice(idx, 1);
@@ -613,6 +691,9 @@ export function discardCards(
   const selected = resolveSelection(run, selectedIds);
   const ids = selected.map((c) => c.id);
 
+  // Cerulean Bell (PET-240): the forced card must be part of discards too.
+  assertForcedCardIncluded(run, selected, rng);
+
   run.discardsRemaining -= 1;
   run.discardsUsedThisBlind += 1;
 
@@ -631,7 +712,11 @@ export function discardCards(
   }
 
   removeFromHand(run, ids);
-  drawToHandSize(run, rng);
+  refillAfterAction(run, rng);
+  // Cerulean Bell: re-force a card if the forced one was just discarded.
+  if (bossEffectOf(run.currentBossEffect)?.kind === "force_card_selection") {
+    ensureForcedCard(run, rng);
+  }
   checkTransition(run, rng); // only the softlock guard is reachable here (no score change)
 }
 
@@ -659,6 +744,8 @@ export function continueRun(run: RunState): void {
     run.ante += 1;
     run.blindIndex = 0;
     run.status = "selecting_blind";
+    // New ante — The Pillar's "played previously this ante" set starts fresh.
+    run.facesPlayedThisAnte = [];
   } else {
     run.status = "won_run";
   }
@@ -713,7 +800,7 @@ function ensurePlaying(run: RunState): void {
 /** Win → shop (+reward, generate shop), then lose-on-exhaustion, then a softlock guard. */
 function checkTransition(run: RunState, rng: () => number): void {
   if (run.totalScore >= run.target) {
-    if (run.currentBossEffect) applyBossEffect(run, "end");
+    if (run.currentBossEffect) applyBossEffect(run, "end", rng);
     // PET-75: gold-enhancement payout — $3 per gold card still held in hand at round end.
     let goldHeld = 0;
     for (const c of run.hand) if (c.enhancement === "gold") goldHeld += 1;
@@ -817,12 +904,157 @@ function applyTags(run: RunState, trigger: TagTrigger, rng: () => number = Math.
   run.tags = remaining;
 }
 
-/** Apply the active boss effect for a given phase. No-op when no boss effect set. */
-function applyBossEffect(run: RunState, _phase: "start" | "play" | "end"): void {
+/**
+ * Apply the active boss effect for a given phase (PET-92 — dispatches off the def's kind):
+ *   start — after budgets are assigned in startBlind (clamps, picks, shuffles).
+ *   play  — after scoring in playHand (money effects; The Ox reads pre-record handTypePlays).
+ *   end   — blind won: clear the boss effect + transient boss state so nothing leaks forward.
+ * No-op when no boss effect is set. Debuffs/face-down/halve-base/hand-size fold in elsewhere
+ * (scoring.ts / applyFaceDownEffect / effectiveHandSize); play-time RESTRICTIONS are enforced
+ * up front by assertBossPlayLegal.
+ */
+function applyBossEffect(
+  run: RunState,
+  phase: "start" | "play" | "end",
+  rng: () => number,
+  playCtx?: { cardsPlayed: number; handType: HandType },
+): void {
   if (!run.currentBossEffect) return;
-  const def = BOSS_EFFECT_BY_ID.get(run.currentBossEffect);
-  if (!def) return;
-  // Content stream PET-78 wires phase-specific behavior off `def` here.
+  if (phase === "end") {
+    run.currentBossEffect = null;
+    run.bossForcedCardId = null;
+    run.bossDisabledJoker = null;
+    return;
+  }
+  const effect = bossEffectOf(run.currentBossEffect);
+  if (!effect) return;
+  if (phase === "start") {
+    switch (effect.kind) {
+      case "max_hands":
+        run.handsRemaining = Math.min(run.handsRemaining, effect.n);
+        break;
+      case "no_discards":
+        run.discardsRemaining = 0;
+        break;
+      case "force_card_selection":
+        ensureForcedCard(run, rng);
+        break;
+      case "disable_random_joker_per_hand":
+        pickDisabledJoker(run, rng);
+        break;
+      case "shuffle_jokers":
+        run.jokers = shuffle(run.jokers, rng);
+        break;
+      default:
+        break;
+    }
+    return;
+  }
+  // phase === "play" — money effects, fired right after scoring.
+  if (!playCtx) return;
+  switch (effect.kind) {
+    case "money_loss_on_play": {
+      // The Tooth: lose $N per card played (floored at $0 — no debt in prealpha).
+      run.money = Math.max(0, run.money - effect.dollarsPerCard * playCtx.cardsPlayed);
+      break;
+    }
+    case "money_set_on_most_played": {
+      // The Ox: playing your MOST played hand type (run-long, pre-this-hand counts) sets money.
+      const counts = run.handTypePlays ?? {};
+      const mine = counts[playCtx.handType] ?? 0;
+      const max = Math.max(0, ...Object.values(counts).map((v) => v ?? 0));
+      if (mine > 0 && mine >= max) run.money = effect.amount;
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+/** Cerulean Bell: keep a valid forced card — repick uniformly when the current one left the hand. */
+function ensureForcedCard(run: RunState, rng: () => number): void {
+  const current = run.bossForcedCardId;
+  if (current && run.hand.some((c) => c.id === current)) return;
+  run.bossForcedCardId =
+    run.hand.length > 0 ? run.hand[Math.floor(rng() * run.hand.length)]!.id : null;
+}
+
+/** Crimson Heart: disable a random owned joker (null when no jokers owned). */
+function pickDisabledJoker(run: RunState, rng: () => number): void {
+  run.bossDisabledJoker =
+    run.jokers.length > 0 ? run.jokers[Math.floor(rng() * run.jokers.length)]! : null;
+}
+
+/** The hand type this selection would score as (face-down excluded, mirroring scoreHand). */
+function visibleHandType(selected: Card[]): HandType {
+  const visible = selected.filter((c) => !c.faceDown);
+  if (visible.length === 0) return "high_card";
+  return evaluateHand(visible).handType;
+}
+
+/**
+ * Boss play restrictions (PET-240), validated BEFORE any state mutation:
+ *   - must_play_n:              exactly N cards (The Psychic).
+ *   - forbid_hand_type_repeat:  each hand type once per blind (The Eye).
+ *   - single_hand_type:         the first played type locks the blind (The Mouth).
+ *   - force_card_selection:     the forced card must be in the selection (Cerulean Bell).
+ */
+function assertBossPlayLegal(run: RunState, selected: Card[], rng: () => number): void {
+  const effect = bossEffectOf(run.currentBossEffect);
+  if (!effect) return;
+  switch (effect.kind) {
+    case "must_play_n": {
+      if (selected.length !== effect.n) {
+        throw new GameError(400, "boss_restriction", `Must play exactly ${effect.n} cards`);
+      }
+      return;
+    }
+    case "forbid_hand_type_repeat": {
+      const t = visibleHandType(selected);
+      if ((run.handTypesPlayedThisBlind ?? []).includes(t)) {
+        throw new GameError(400, "boss_restriction", "That hand type was already played this blind");
+      }
+      return;
+    }
+    case "single_hand_type": {
+      const t = visibleHandType(selected);
+      const first = (run.handTypesPlayedThisBlind ?? [])[0];
+      if (first !== undefined && first !== t) {
+        throw new GameError(400, "boss_restriction", "Only one hand type may be played this blind");
+      }
+      return;
+    }
+    case "force_card_selection": {
+      assertForcedCardIncluded(run, selected, rng);
+      return;
+    }
+    default:
+      return;
+  }
+}
+
+/** Cerulean Bell shared gate for play AND discard: selection must include the forced card. */
+function assertForcedCardIncluded(run: RunState, selected: Card[], rng: () => number): void {
+  if (bossEffectOf(run.currentBossEffect)?.kind !== "force_card_selection") return;
+  // Repick first in case the forced card left the hand via a consumable (destroy/convert).
+  ensureForcedCard(run, rng);
+  const forced = run.bossForcedCardId;
+  if (forced && !selected.some((c) => c.id === forced)) {
+    throw new GameError(400, "boss_restriction", "The forced card must be part of the selection");
+  }
+}
+
+/**
+ * Standard post-action refill — or The Serpent's fixed draw: after any play/discard, always
+ * draw exactly N (capped by the deck), even past the normal hand size.
+ */
+function refillAfterAction(run: RunState, rng: () => number): void {
+  const effect = bossEffectOf(run.currentBossEffect);
+  if (effect?.kind === "draw_fixed_after_action") {
+    draw(run, effect.n, rng);
+    return;
+  }
+  drawToHandSize(run, rng);
 }
 
 /** Use a consumable from a run slot. PET-71 tarot effects; PET-72 spectral extends the switch. */
@@ -1349,8 +1581,12 @@ function draw(run: RunState, count: number, rng: () => number = Math.random): vo
     run.hand.push(card);
     fresh.push(card);
   }
-  // PET-83: Wheel/Mark applies to every freshly-drawn card, so Hook + Wheel interact correctly.
-  if (fresh.length > 0) applyFaceDownEffect(fresh, run.currentBossEffect, rng);
+  // PET-83/240: Wheel/Mark apply to every freshly-drawn card (so Hook + Wheel interact
+  // correctly); The Fish flips draws face-down once a hand has been played this blind.
+  if (fresh.length > 0) {
+    const played = (run.handTypesPlayedThisBlind ?? []).length > 0;
+    applyFaceDownEffect(fresh, run.currentBossEffect, rng, played ? "draw_after_play" : "draw");
+  }
 }
 
 /**

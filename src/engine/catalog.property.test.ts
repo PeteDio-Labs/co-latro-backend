@@ -22,6 +22,7 @@ import { describe, expect, it } from "bun:test";
 import fc from "fast-check";
 import { scoreHand, defaultHandLevels } from "../scoring.ts";
 import { JOKERS } from "./jokers.ts";
+import { BOSS_EFFECTS, rollBossEffect } from "./boss.ts";
 import { makeDeck, type Card, type CardEdition } from "../cards.ts";
 import { startRun, toRunDTO } from "./run.ts";
 import { cards } from "../testkit.ts";
@@ -106,6 +107,42 @@ describe("scoring — additive-invariance (an un-used entry never changes a game
         const s = scoreHand(HIGH_CARD, { handLevels: defaultHandLevels(), jokers: owned }).score;
         expect(s).toBe(baseline);
       }),
+    );
+  });
+});
+
+// ---- boss-effect invariants (PET-92 / PET-239 / PET-240) --------------------------------
+describe("boss effects — debuff + roll-pool invariants", () => {
+  it("a fully-debuffed hand scores base values only, and never MORE than the clean hand", () => {
+    assert(
+      fc.property(handGen, (played) => {
+        const clean = scoreHand(played, { handLevels: defaultHandLevels() });
+        const debuffed = scoreHand(
+          played.map((c) => ({ ...c, debuffed: true })),
+          { handLevels: defaultHandLevels() },
+        );
+        // Shape survives (debuffed cards still count for hand detection)…
+        expect(debuffed.handType).toBe(clean.handType);
+        // …but no card contributes chips, so only the base remains.
+        expect(debuffed.scoringChips).toBe(0);
+        expect(debuffed.totalChips).toBe(debuffed.baseChips);
+        expect(debuffed.score).toBeLessThanOrEqual(clean.score);
+      }),
+    );
+  });
+
+  it("rollBossEffect returns a finisher iff the ante is the final one", () => {
+    const finishers = new Set(BOSS_EFFECTS.filter((b) => b.finisher).map((b) => b.id));
+    assert(
+      fc.property(
+        fc.double({ min: 0, max: 1, noNaN: true, maxExcluded: true }),
+        fc.integer({ min: 1, max: 8 }),
+        (r, ante) => {
+          const id = rollBossEffect(ante, () => r);
+          expect(id).not.toBeNull();
+          expect(finishers.has(id!)).toBe(ante === 8);
+        },
+      ),
     );
   });
 });
