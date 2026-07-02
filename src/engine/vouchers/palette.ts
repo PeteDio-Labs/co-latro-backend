@@ -4,12 +4,11 @@ const def: VoucherDef = {
     id: "palette",
     name: "Palette",
     description: "+2 hand size",
-    amount: 2,
+    cost: 10,
     effect: {
       kind: "extra_hand_size",
-      amt: 2
-    },
-    requires: "paint_brush"
-};
+      n: 2
+    }
+  };
 
 export default def;
