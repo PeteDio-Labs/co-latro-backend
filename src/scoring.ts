@@ -6,7 +6,7 @@
 
 import { chipValue, type Card } from "./cards.ts";
 import { evaluateHand, type HandType } from "./evaluator.ts";
-import { JOKERS } from "./engine/jokers.ts";
+import { JOKERS, type XMultCondition } from "./engine/jokers.ts";
 
 export type { HandType } from "./evaluator.ts";
 
@@ -94,6 +94,8 @@ export interface ScoreContext {
   jokerEditions?: Record<string, "foil" | "holo" | "poly" | "negative">;
   /** Cards still HELD in hand (not played) — steel enhancement reads this for x1.5 per steel held. */
   handHeld?: Card[];
+  /** Hand types already played earlier this round (PET-232 hand_count_this_round condition). */
+  handTypesPlayedThisBlind?: HandType[];
   /** Transient flat mult bonus consumed by the next scored hand (PET-78 mult_add_next_hand tag). */
   nextHandMultBonus?: number;
   /** The Flint (PET-239): halve the level-adjusted base chips AND base mult (ceil, so a level-1
@@ -152,6 +154,35 @@ export function handFeatures(played: Card[]): HandFeatures {
     straight,
     flush,
   };
+}
+
+/** PET-232 x_mult_if: evaluates one condition against the current scoring pass. */
+export function matchesXMultCondition(
+  condition: XMultCondition,
+  info: {
+    handType: HandType;
+    scoredCards: Card[];
+    heldOnly: Card[] | undefined;
+    isFinalHand: boolean;
+    handTypesPlayedThisBlind: HandType[] | undefined;
+  },
+): boolean {
+  switch (condition.kind) {
+    case "all_held_suits_in":
+      // No handHeld context at all (as opposed to a real, empty held hand) is treated as
+      // "unknown" and fails closed — a genuinely empty held hand vacuously satisfies "all".
+      if (info.heldOnly === undefined) return false;
+      return info.heldOnly.every((c) => condition.suits.includes(c.suit));
+    case "played_suit_count":
+      return new Set(info.scoredCards.map((c) => c.suit)).size >= condition.min;
+    case "final_hand":
+      return info.isFinalHand;
+    case "hand_count_this_round":
+      return (
+        (info.handTypesPlayedThisBlind ?? []).filter((t) => t === info.handType).length >=
+        condition.min
+      );
+  }
 }
 
 export interface ScoreBreakdown {
@@ -328,15 +359,18 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
   // Apply AFTER the joker fold (Balatro's order), so track count now and fold in below.
   // PET-231: held_rank_x_mult jokers (Baron) need the same "still in hand" set, counted per
   // rank, so both consumers share one filtered pass over ctx.handHeld.
-  let steelHeldCount = 0;
   const heldRankCounts = new Map<number, number>();
+  // heldOnly = handHeld minus the cards actually played this hand (feeds PET-232's
+  // all_held_suits_in condition below). Use the full `played` set (including face-down) so a
+  // face-down card in the play selection is still considered "played" and excluded.
+  let heldOnly: Card[] | undefined;
   if (ctx?.handHeld) {
-    // Use the full `played` set (including face-down) so a face-down steel card in the play
-    // selection is still considered "played" and excluded from the held bonus.
     const playedIds = new Set(played.map((c) => c.id));
-    for (const c of ctx.handHeld) {
-      // Debuffed cards (PET-239 — e.g. Verdant Leaf debuffs held cards too) don't trigger.
-      if (c.debuffed || playedIds.has(c.id)) continue;
+    heldOnly = ctx.handHeld.filter((c) => !playedIds.has(c.id));
+    for (const c of heldOnly) {
+      // Debuffed cards (PET-239 — e.g. Verdant Leaf debuffs held cards too) don't trigger
+      // steel's ×1.5 or PET-231's held_rank_x_mult count.
+      if (c.debuffed) continue;
       if (c.enhancement === "steel") steelHeldCount += 1;
       heldRankCounts.set(c.rank, (heldRankCounts.get(c.rank) ?? 0) + 1);
     }
@@ -446,8 +480,24 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
           if (n > 0) mult *= Math.pow(e.xMult, n);
           break;
         }
+        case "x_mult_if":
+          // PET-232: ×xMult gated on a board-state condition (mirrors x_mult_contains, but the
+          // condition vocabulary is richer than HandFeature — held suits, played-suit spread,
+          // final hand, repeated hand type this round).
+          if (
+            matchesXMultCondition(e.condition, {
+              handType,
+              scoredCards,
+              heldOnly,
+              isFinalHand,
+              handTypesPlayedThisBlind: ctx?.handTypesPlayedThisBlind,
+            })
+          ) {
+            mult *= e.xMult;
+          }
+          break;
       }
-      if (e.kind === "x_mult_contains") {
+      if (e.kind === "x_mult_contains" || e.kind === "x_mult_if") {
         if (mult !== beforeMult) jokerSteps.push({ jokerId: jid, name: def.name, xMult: e.xMult });
       } else if (e.kind === "held_rank_x_mult") {
         if (mult !== beforeMult) jokerSteps.push({ jokerId: jid, name: def.name, xMult: mult / beforeMult });

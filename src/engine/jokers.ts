@@ -46,7 +46,24 @@ export type JokerEffect =
   // PET-231: ×xMult per card of `rank` still HELD in hand (not played) — compounds as
   // xMult^N, same "cards in hand" side channel steel enhancement reads (ctx.handHeld).
   // Shared shape for every "×Mult per rank held" joker (Baron, ...).
-  | { kind: "held_rank_x_mult"; rank: number; xMult: number };
+  | { kind: "held_rank_x_mult"; rank: number; xMult: number }
+  // PET-232 Bucket-B: ×Mult gated on hand/board-state conditions beyond hand-type (which
+  // x_mult_contains already covers via HandFeature). One kind, small condition vocabulary —
+  // future "flip" tickets (Flower Pot, Seeing Double, Acrobat, Card Sharp, ...) add a catalog
+  // entry that reuses one of these conditions instead of touching scoring.ts again.
+  | { kind: "x_mult_if"; condition: XMultCondition; xMult: number };
+
+export type XMultCondition =
+  // All cards still HELD in hand (not played) must be one of `suits` (Blackboard). An empty
+  // held hand vacuously satisfies this (matches Balatro).
+  | { kind: "all_held_suits_in"; suits: Suit[] }
+  // The played/scored hand spans at least `min` distinct suits (Flower Pot: min=4).
+  | { kind: "played_suit_count"; min: number }
+  // This is the final hand of the round (handsRemaining <= 1; Acrobat).
+  | { kind: "final_hand" }
+  // This hand's type has already been played at least `min` times earlier this round
+  // (Card Sharp: min=1 — "hand type already played this round").
+  | { kind: "hand_count_this_round"; min: number };
 
 /** Effect kinds whose state lives in run.jokerStates[id] = { counter }. */
 export function isScalingEffect(effect: JokerEffect): boolean {
