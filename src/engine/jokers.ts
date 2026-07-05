@@ -42,7 +42,11 @@ export type JokerEffect =
   // PET-229: unconditional +mult (scored like flat_mult); separately, at end of round, a
   // chancePct-in-100 roll (src/engine/prng.ts rollChance) may fire onFail. Shared shape for
   // every "flat Mult + chance to X" joker (Gros Michel, Cavendish, ...).
-  | { kind: "chance_mult"; mult: number; chancePct: number; onFail?: "destroy_self" };
+  | { kind: "chance_mult"; mult: number; chancePct: number; onFail?: "destroy_self" }
+  // PET-231: ×xMult per card of `rank` still HELD in hand (not played) — compounds as
+  // xMult^N, same "cards in hand" side channel steel enhancement reads (ctx.handHeld).
+  // Shared shape for every "×Mult per rank held" joker (Baron, ...).
+  | { kind: "held_rank_x_mult"; rank: number; xMult: number };
 
 /** Effect kinds whose state lives in run.jokerStates[id] = { counter }. */
 export function isScalingEffect(effect: JokerEffect): boolean {

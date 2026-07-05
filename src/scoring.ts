@@ -326,14 +326,19 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
 
   // Steel cards HELD in hand (not played) — each multiplies the running mult by ×1.5.
   // Apply AFTER the joker fold (Balatro's order), so track count now and fold in below.
+  // PET-231: held_rank_x_mult jokers (Baron) need the same "still in hand" set, counted per
+  // rank, so both consumers share one filtered pass over ctx.handHeld.
   let steelHeldCount = 0;
+  const heldRankCounts = new Map<number, number>();
   if (ctx?.handHeld) {
     // Use the full `played` set (including face-down) so a face-down steel card in the play
     // selection is still considered "played" and excluded from the held bonus.
     const playedIds = new Set(played.map((c) => c.id));
     for (const c of ctx.handHeld) {
-      // Debuffed steel (PET-239 — e.g. Verdant Leaf debuffs held cards too) doesn't trigger.
-      if (c.enhancement === "steel" && !c.debuffed && !playedIds.has(c.id)) steelHeldCount += 1;
+      // Debuffed cards (PET-239 — e.g. Verdant Leaf debuffs held cards too) don't trigger.
+      if (c.debuffed || playedIds.has(c.id)) continue;
+      if (c.enhancement === "steel") steelHeldCount += 1;
+      heldRankCounts.set(c.rank, (heldRankCounts.get(c.rank) ?? 0) + 1);
     }
   }
 
@@ -434,9 +439,18 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
           // scoring only ever sees the unconditional +mult, same as flat_mult.
           mult += e.mult;
           break;
+        case "held_rank_x_mult": {
+          // PET-231: ×xMult per HELD (unplayed) card of `rank` — compounds as xMult^N (Baron:
+          // ×1.5 per King held). Uses the same held-card pass as the steel bonus above.
+          const n = heldRankCounts.get(e.rank) ?? 0;
+          if (n > 0) mult *= Math.pow(e.xMult, n);
+          break;
+        }
       }
       if (e.kind === "x_mult_contains") {
         if (mult !== beforeMult) jokerSteps.push({ jokerId: jid, name: def.name, xMult: e.xMult });
+      } else if (e.kind === "held_rank_x_mult") {
+        if (mult !== beforeMult) jokerSteps.push({ jokerId: jid, name: def.name, xMult: mult / beforeMult });
       } else if (e.kind === "retrigger_face") {
         // Always log an animation step when this joker is owned and there were face cards scored.
         if (scoredCards.some((c) => c.rank >= 11 && c.rank <= 13)) {

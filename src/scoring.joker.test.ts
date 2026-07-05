@@ -246,6 +246,36 @@ describe("PET-67 joker editions", () => {
   });
 });
 
+describe("PET-231 held-in-hand effects", () => {
+  it("held_rank_x_mult (Baron): ×1.5 Mult per King HELD (not played)", () => {
+    // Play "9S" alone; one King ("KH") sits unplayed in hand alongside it.
+    // High card 9: (5+9) × 1 = 14 baseline. Baron: one King held → ×1.5 → round(14×1.5) = 21.
+    const r = scoreHand(cards("9S"), ctx(["baron"], { handHeld: cards("KH 9S") }));
+    expect(r.score).toBe(21);
+    expect(r.jokerSteps).toEqual([{ jokerId: "baron", name: "Baron", xMult: 1.5 }]);
+  });
+
+  it("held_rank_x_mult compounds per held King: two Kings held → ×1.5²", () => {
+    // (5+9) × 1.5² = 14 × 2.25 = 31.5 → round 32.
+    const r = scoreHand(cards("9S"), ctx(["baron"], { handHeld: cards("KH KS 9S") }));
+    expect(r.score).toBe(32);
+  });
+
+  it("a King that is PLAYED does not count towards Baron's held bonus", () => {
+    // Both Kings are played (and thus scored as a pair), so held-King count is 0 → no bonus.
+    // Pair of Kings: (10 + 10+10) × 2 = 60.
+    const r = scoreHand(cards("KH KS 3D 7C 9S"), ctx(["baron"], { handHeld: cards("KH KS 3D 7C 9S") }));
+    expect(r.score).toBe(60);
+    expect(r.jokerSteps).toHaveLength(0);
+  });
+
+  it("no Kings held is a no-op", () => {
+    const r = scoreHand(cards("9S"), ctx(["baron"], { handHeld: cards("7C 9S") }));
+    expect(r.score).toBe(14); // (5+9) × 1
+    expect(r.jokerSteps).toHaveLength(0);
+  });
+});
+
 describe("handFeatures (contains semantics)", () => {
   it("full house contains pair + two_pair + three_of_a_kind", () => {
     expect(handFeatures(cards("KH KS KD 7C 7S"))).toEqual({
