@@ -11,7 +11,13 @@ import { Glob } from "bun";
 export type JokerRarity = "common" | "uncommon" | "rare";
 
 /** "Contains" features (subset matching, computed by scoring.handFeatures). */
-export type HandFeature = "pair" | "two_pair" | "three_of_a_kind" | "straight" | "flush";
+export type HandFeature =
+  | "pair"
+  | "two_pair"
+  | "three_of_a_kind"
+  | "four_of_a_kind"
+  | "straight"
+  | "flush";
 
 export type JokerEffect =
   | { kind: "flat_mult"; mult: number }
