@@ -63,6 +63,12 @@ describe("joker effects", () => {
     expect(scoreHand(cards("2C 5D 9H JS KC"), ctx(["the_duo"])).score).toBe(15); // high card, no pair
   });
 
+  it("x_mult_contains (The Family): ×4 on four of a kind, no-op without quads", () => {
+    // PET-223: four_of_a_kind is a new HandFeature (maxCount >= 4). ×4 fires on quads.
+    expect(scoreHand(cards("9C 9D 9H 9S KC"), ctx(["the_family"])).score).toBe(2688); // 672 × 4
+    expect(scoreHand(cards("KH KS 3D 7C 9S"), ctx(["the_family"])).score).toBe(60); // pair only, no-op
+  });
+
   it("ORDER MATTERS: ×Mult before vs after +Mult", () => {
     const before = scoreHand(cards("KH KS 3D 7C 9S"), ctx(["the_duo", "joker"])).score; // (2×2)+4 = 8 → 240
     const after = scoreHand(cards("KH KS 3D 7C 9S"), ctx(["joker", "the_duo"])).score; // (2+4)×2 = 12 → 360
@@ -282,15 +288,17 @@ describe("handFeatures (contains semantics)", () => {
       pair: true,
       two_pair: true,
       three_of_a_kind: true,
+      four_of_a_kind: false,
       straight: false,
       flush: false,
     });
   });
 
-  it("four of a kind contains pair + three_of_a_kind, not two_pair", () => {
+  it("four of a kind contains pair + three_of_a_kind + four_of_a_kind, not two_pair", () => {
     const f = handFeatures(cards("9C 9D 9H 9S KC"));
     expect(f.pair).toBe(true);
     expect(f.three_of_a_kind).toBe(true);
+    expect(f.four_of_a_kind).toBe(true);
     expect(f.two_pair).toBe(false);
   });
 
@@ -303,6 +311,7 @@ describe("handFeatures (contains semantics)", () => {
       pair: false,
       two_pair: false,
       three_of_a_kind: false,
+      four_of_a_kind: false,
       straight: false,
       flush: false,
     });

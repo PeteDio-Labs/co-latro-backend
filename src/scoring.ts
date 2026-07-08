@@ -115,6 +115,7 @@ export interface HandFeatures {
   pair: boolean;
   two_pair: boolean;
   three_of_a_kind: boolean;
+  four_of_a_kind: boolean;
   straight: boolean;
   flush: boolean;
 }
@@ -149,6 +150,7 @@ export function handFeatures(played: Card[]): HandFeatures {
     pair: maxCount >= 2,
     two_pair: pairRanks >= 2,
     three_of_a_kind: maxCount >= 3,
+    four_of_a_kind: maxCount >= 4,
     straight,
     flush,
   };
