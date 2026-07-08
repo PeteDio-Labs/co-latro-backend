@@ -359,6 +359,7 @@ export function scoreHand(played: Card[], ctx?: ScoreContext): ScoreBreakdown {
   // Apply AFTER the joker fold (Balatro's order), so track count now and fold in below.
   // PET-231: held_rank_x_mult jokers (Baron) need the same "still in hand" set, counted per
   // rank, so both consumers share one filtered pass over ctx.handHeld.
+  let steelHeldCount = 0;
   const heldRankCounts = new Map<number, number>();
   // heldOnly = handHeld minus the cards actually played this hand (feeds PET-232's
   // all_held_suits_in condition below). Use the full `played` set (including face-down) so a

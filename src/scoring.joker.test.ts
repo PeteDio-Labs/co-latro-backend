@@ -1,5 +1,12 @@
 import { describe, expect, it } from "bun:test";
-import { defaultHandLevels, handFeatures, scoreHand, type ScoreContext } from "./scoring.ts";
+import {
+  defaultHandLevels,
+  handFeatures,
+  matchesXMultCondition,
+  scoreHand,
+  type ScoreContext,
+} from "./scoring.ts";
+import type { HandType } from "./evaluator.ts";
 import { card, cards, withMod } from "./testkit.ts";
 
 function ctx(jokers: string[], extra: Partial<ScoreContext> = {}): ScoreContext {
@@ -306,5 +313,78 @@ describe("handFeatures (contains semantics)", () => {
       straight: false,
       flush: false,
     });
+  });
+});
+
+describe("PET-232 Bucket-B: x_mult_if (conditional ×Mult)", () => {
+  // Exemplar joker: Blackboard — ×3 Mult if every card HELD in hand is a Spade or Club.
+  // Pair of Ks scored (base 60); ×3 → 180 when the condition holds, no-op (60) otherwise.
+  const played = cards("KH KS 3D 7C 9S");
+
+  it("Blackboard (all_held_suits_in): ×3 when all held are spades/clubs", () => {
+    expect(scoreHand(played, ctx(["blackboard"], { handHeld: cards("2S 4C 6S") })).score).toBe(180);
+  });
+
+  it("Blackboard: no-op when a held card is off-suit (a heart)", () => {
+    expect(scoreHand(played, ctx(["blackboard"], { handHeld: cards("2S 4C 6H") })).score).toBe(60);
+  });
+
+  it("Blackboard: empty held hand vacuously satisfies (whole hand played) → ×3", () => {
+    // handHeld provided but every card was played this hand → heldOnly is empty → fires.
+    expect(scoreHand(played, ctx(["blackboard"], { handHeld: played })).score).toBe(180);
+  });
+
+  it("Blackboard: no handHeld context at all fails closed (no-op), not vacuously true", () => {
+    expect(scoreHand(played, ctx(["blackboard"])).score).toBe(60);
+  });
+
+  it("x_mult_if logs a ×Mult joker step only when it fires", () => {
+    const fired = scoreHand(played, ctx(["blackboard"], { handHeld: cards("2S 4C 6S") })).jokerSteps;
+    expect(fired).toEqual([{ jokerId: "blackboard", name: "Blackboard", xMult: 3 }]);
+    const noop = scoreHand(played, ctx(["blackboard"], { handHeld: cards("2S 4C 6H") })).jokerSteps;
+    expect(noop).toHaveLength(0);
+  });
+
+  // Direct coverage of every condition in matchesXMultCondition (the four-branch evaluator).
+  const info = (o: Partial<Parameters<typeof matchesXMultCondition>[1]> = {}) => ({
+    handType: "pair" as HandType,
+    scoredCards: [],
+    heldOnly: undefined,
+    isFinalHand: false,
+    handTypesPlayedThisBlind: undefined,
+    ...o,
+  });
+
+  it("all_held_suits_in: empty held true, off-suit false, undefined fails closed", () => {
+    const c = { kind: "all_held_suits_in", suits: ["spades", "clubs"] } satisfies Parameters<
+      typeof matchesXMultCondition
+    >[0];
+    expect(matchesXMultCondition(c, info({ heldOnly: [] }))).toBe(true);
+    expect(matchesXMultCondition(c, info({ heldOnly: cards("2S 4C") }))).toBe(true);
+    expect(matchesXMultCondition(c, info({ heldOnly: cards("2S 4H") }))).toBe(false);
+    expect(matchesXMultCondition(c, info({ heldOnly: undefined }))).toBe(false);
+  });
+
+  it("played_suit_count: fires at/above min distinct suits, not below", () => {
+    const c = { kind: "played_suit_count", min: 3 } as const;
+    expect(matchesXMultCondition(c, info({ scoredCards: cards("2S 4C 6H") }))).toBe(true);
+    expect(matchesXMultCondition(c, info({ scoredCards: cards("2S 4C 6C") }))).toBe(false);
+  });
+
+  it("final_hand: mirrors isFinalHand", () => {
+    const c = { kind: "final_hand" } as const;
+    expect(matchesXMultCondition(c, info({ isFinalHand: true }))).toBe(true);
+    expect(matchesXMultCondition(c, info({ isFinalHand: false }))).toBe(false);
+  });
+
+  it("hand_count_this_round: counts prior plays of THIS hand type", () => {
+    const c = { kind: "hand_count_this_round", min: 1 } as const;
+    expect(
+      matchesXMultCondition(c, info({ handType: "pair", handTypesPlayedThisBlind: ["pair"] })),
+    ).toBe(true);
+    expect(
+      matchesXMultCondition(c, info({ handType: "pair", handTypesPlayedThisBlind: ["flush"] })),
+    ).toBe(false);
+    expect(matchesXMultCondition(c, info({ handType: "pair" }))).toBe(false); // undefined → 0
   });
 });
