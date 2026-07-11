@@ -29,14 +29,14 @@ jobs:
   deploy:
     runs-on: [self-hosted, linux, x64, homelab]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Encode Vault CA
         id: vault_ca
         run: echo "b64=$(base64 -w0 .github/vault-ca.crt)" >> "$GITHUB_OUTPUT"
 
       - name: Vault — mint Nexus creds + LXC SSH key via OIDC
-        uses: hashicorp/vault-action@v3
+        uses: hashicorp/vault-action@v4
         with:
           url: https://192.168.50.223:8200
           method: jwt

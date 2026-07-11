@@ -41,7 +41,7 @@ jobs:
           --health-retries 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: oven-sh/setup-bun@v2
 
@@ -70,7 +70,7 @@ jobs:
       # main: mint Nexus push creds from Vault via OIDC (colatro-ci role).
       - name: Vault — mint Nexus creds via OIDC
         if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
-        uses: hashicorp/vault-action@v3
+        uses: hashicorp/vault-action@v4
         with:
           url: https://192.168.50.223:8200
           method: jwt
