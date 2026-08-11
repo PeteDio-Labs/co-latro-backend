@@ -81,5 +81,5 @@ src/
 A long-running HTTP service on `:3020`, shipped as a Docker image (`Dockerfile`, `oven/bun` base) that
 runs migrations on boot then `bun run start`. CI (`.github/workflows/ci.yml`, Workflow A on the self-hosted
 homelab runner): **PR** → install + typecheck + test (against an ephemeral Postgres service) + image build;
-**merge to `main`** → build + push to Nexus (`docker.pdlab.dev`) via `scripts/deploy.sh`, then roll out on
+**merge to `main`** → build + push to the registry (`docker.pdlab.dev`) via `scripts/deploy.sh`, then roll out on
 the poker-api VM (the VM rollout is wired infra-side in `petedio-iac` — see the TODO in `deploy.sh`).
