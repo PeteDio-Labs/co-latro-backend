@@ -1,5 +1,7 @@
 # Co-latro — Backend
 
+> **Status: paused on purpose, for now.** Co-latro's deployment was taken down deliberately on 2026-09-08 (PET-366) — LXC 230, both Cloudflare routes and their Access app, and the `admin` and `poker` databases. The code stays on `main`. The workflows described below still run and fail at `docker.pdlab.dev`, a registry that will not restore (PET-389); PET-388 decides what happens to them meanwhile. Nothing here is served anywhere today.
+
 The authoritative game server for **Co-latro**, a neon Cyber-HUD roguelike poker game (a mini, co-op-bound
 [Balatro](https://www.playbalatro.com/)). It owns the hidden deck, evaluates and scores hands
 (`chips × mult`, hand levels, and jokers), runs the ante → blind → shop state machine, and persists every
