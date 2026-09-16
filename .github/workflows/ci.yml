@@ -1,11 +1,21 @@
-# Co-latro backend — Workflow A (App CI/CD), publish-on-merge.
-#   PR            → install + typecheck + test (ephemeral Postgres) + image build (no push)
-#   push to main  → build + PUSH image to the registry (docker.pdlab.dev). NO auto-rollout —
-#                   the on-VM deploy is the manual deploy.yml (workflow_dispatch, SHA in).
+# Co-latro backend — Workflow A (App CI/CD), publish-on-merge, split by trust.
+#   PR            → `build` on a GitHub-hosted runner: install + typecheck + test
+#                   (ephemeral Postgres) + image build, no push
+#   push to main  → `build`, then `publish` on the self-hosted homelab runner:
+#                   build + PUSH the image to the registry (docker.pdlab.dev). No
+#                   auto-rollout — the on-VM deploy is the manual deploy.yml
+#                   (workflow_dispatch, SHA in).
 #
-# Secrets come from Vault via GitHub OIDC (colatro-ci role → colatro-ci policy), NOT
-# repo Actions secrets — mirrors petedio-iac's terraform.yml. Runs on the self-hosted
-# runner (VM 232) inside the homelab so it can reach the registry + Vault (.223).
+# THE SPLIT IS THE SECURITY BOUNDARY, and it is the one petedio-iac already draws
+# (PET-163, PET-407). This repo is public and the runner sits inside the homelab,
+# so a pull request opened by anyone must not run its own code there, and must not
+# carry a token that mints Vault credentials. `build` runs on ubuntu-latest and
+# gets no id-token; `publish`, which no pull request can start, is the only job
+# that asks for one. A single `permissions:` block at the top of the file handed
+# `id-token: write` to every job, the pull-request one included (PET-460).
+#
+# Secrets come from Vault via GitHub OIDC (colatro-ci role → colatro-ci policy),
+# NOT repo Actions secrets.
 name: ci
 
 on:
@@ -13,17 +23,21 @@ on:
   push:
     branches: [main]
 
+# The floor for every job. A job that needs more declares it for itself, so
+# adding a job here cannot silently acquire a credential.
 permissions:
   contents: read
-  id-token: write # mint the GitHub OIDC token vault-action exchanges for a Vault token
 
 env:
   IMAGE: docker.pdlab.dev/co-latro-backend
   VAULT_ADDR: https://192.168.50.223:8200
 
 jobs:
+  # A pull request starts this job, so it runs on a GitHub-hosted runner with no
+  # LAN route and no id-token. Everything it does works there: setup-bun,
+  # a Postgres service container and docker are all part of the ubuntu-latest image.
   build:
-    runs-on: [self-hosted, linux, x64, homelab]
+    runs-on: ubuntu-latest
 
     # Ephemeral Postgres for the test step — never the live .231 DB.
     services:
@@ -55,21 +69,32 @@ jobs:
           TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/colatro
         run: bun test
 
-      # PR: prove the image builds (no push).
+      # PR: prove the image builds (no push). The tag names the registry to match
+      # what `publish` pushes; the build itself contacts nothing.
       - name: Build image
         if: ${{ github.event_name == 'pull_request' }}
         run: docker build -t "$IMAGE:pr-${{ github.event.pull_request.number }}" .
 
+  # Push to main only. That `if` is what lets this job hold id-token: the code it
+  # runs has already been merged, so it is code Pedro reviewed. Keep the condition
+  # and the runner label together — moving either one alone reopens PET-460.
+  publish:
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs: build
+    runs-on: [self-hosted, linux, x64, homelab]
+    permissions:
+      contents: read
+      id-token: write # mint the GitHub OIDC token vault-action exchanges for a Vault token
+    steps:
+      - uses: actions/checkout@v6
+
       # vault-action's caCertificate wants base64 PEM; a `with:` can't read a file,
       # so emit the committed public CA as a base64 step output (verify TLS, not skip).
       - name: Encode Vault CA
-        if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
         id: vault_ca
         run: echo "b64=$(base64 -w0 .github/vault-ca.crt)" >> "$GITHUB_OUTPUT"
 
-      # main: mint registry push creds from Vault via OIDC (colatro-ci role).
       - name: Vault — mint registry creds via OIDC
-        if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
         uses: hashicorp/vault-action@v4
         with:
           url: https://192.168.50.223:8200
@@ -83,9 +108,8 @@ jobs:
             kv/data/services/registry username | REGISTRY_USERNAME ;
             kv/data/services/registry password | REGISTRY_PASSWORD
 
-      # main: build + PUSH to the registry (no rollout — deploy.yml does that on demand).
+      # Build + PUSH to the registry (no rollout — deploy.yml does that on demand).
       - name: Build & push image
-        if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
         env:
           REGISTRY_HOST: docker.pdlab.dev
         run: ./scripts/deploy.sh "${{ github.sha }}"

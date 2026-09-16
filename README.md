@@ -81,7 +81,10 @@ src/
 ## Deploy / CI
 
 A long-running HTTP service on `:3020`, shipped as a Docker image (`Dockerfile`, `oven/bun` base) that
-runs migrations on boot then `bun run start`. CI (`.github/workflows/ci.yml`, Workflow A on the self-hosted
-homelab runner): **PR** → install + typecheck + test (against an ephemeral Postgres service) + image build;
-**merge to `main`** → build + push to the registry (`docker.pdlab.dev`) via `scripts/deploy.sh`, then roll out on
+runs migrations on boot then `bun run start`. CI (`.github/workflows/ci.yml`, Workflow A, split by trust):
+**PR** → the `build` job on `ubuntu-latest` — install + typecheck + test (against an ephemeral Postgres
+service) + image build; **merge to `main`** → `build`, then the `publish` job on the self-hosted homelab
+runner — build + push to the registry (`docker.pdlab.dev`) via `scripts/deploy.sh`, then roll out on
 the poker-api VM (the VM rollout is wired infra-side in `petedio-iac` — see the TODO in `deploy.sh`).
+This repo is public, so no job a pull request can start runs on the homelab runner or holds
+`id-token: write` (PET-460).
